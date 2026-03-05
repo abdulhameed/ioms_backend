@@ -5,8 +5,9 @@ from django.urls import path, include
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/v1/', include('apps.core.urls')),
-    # Phase 2+ app URLs registered here as each phase completes:
-    # path('api/v1/', include('apps.users.urls')),
+    path('api/v1/', include('apps.users.urls')),
+    # Phase 3+ app URLs registered here as each phase completes:
+    # path('api/v1/', include('apps.approvals.urls')),
     # path('api/v1/', include('apps.approvals.urls')),
     # path('api/v1/', include('apps.projects.urls')),
     # path('api/v1/', include('apps.shortlets.urls')),
