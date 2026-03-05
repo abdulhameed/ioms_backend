@@ -1,0 +1,5 @@
+# S3 storage dependencies — include in production when USE_S3=True
+# Add to requirements.txt in Phase 8 (Deploy Readiness) or install separately:
+#   pip install -r requirements.s3.txt
+boto3==1.34.69
+django-storages==1.14.2

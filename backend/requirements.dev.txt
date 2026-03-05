@@ -1,0 +1,19 @@
+# Includes all production dependencies
+-r requirements.txt
+
+# Testing
+pytest==7.4.4
+pytest-django==4.8.0
+pytest-cov==4.1.0
+factory-boy==3.3.0
+freezegun==1.4.0
+
+# Code quality
+black==24.2.0
+flake8==7.0.0
+
+# Django dev tools
+django-extensions==3.2.3
+ipython==8.22.2
+django-debug-toolbar==4.3.0
+django-silk==5.1.0
