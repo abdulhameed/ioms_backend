@@ -8,7 +8,8 @@ urlpatterns = [
     path('api/v1/', include('apps.users.urls')),
     # Phase 3+
     path('api/v1/', include('apps.approvals.urls')),
-    # path('api/v1/', include('apps.approvals.urls')),
+    path('api/v1/', include('apps.projects.urls')),
+    # path('api/v1/', include('apps.shortlets.urls')),
     # path('api/v1/', include('apps.projects.urls')),
     # path('api/v1/', include('apps.shortlets.urls')),
     # path('api/v1/', include('apps.maintenance.urls')),
