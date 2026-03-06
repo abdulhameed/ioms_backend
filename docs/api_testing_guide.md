@@ -22,6 +22,61 @@
 
 ---
 
+## Prerequisites — First-Time Setup
+
+These steps are required once on a fresh database before any authenticated endpoint can be tested.
+
+### Step 1 — Start the stack
+
+```bash
+make up
+make migrate
+make seed      # creates all 13 Django groups (idempotent)
+```
+
+### Step 2 — Create the first privileged user
+
+There is no public signup. The first `md` or `hr_full` user must be created via the Django shell. Run this from your terminal:
+
+```bash
+docker compose exec backend python manage.py shell -c "
+from apps.users.models import CustomUser
+from django.contrib.auth.models import Group
+
+user = CustomUser.objects.create_user(
+    username='admin',
+    email='admin@example.com',
+    password='AdminPass123!',
+    role='md',
+    permission_level='full',
+    is_active=True,
+)
+user.groups.add(Group.objects.get(name='md'))
+print('Created:', user.email)
+"
+```
+
+**Notes:**
+- `make seed` must be run first so the `md` group exists
+- `role='md'` + `permission_level='full'` grants full system access
+- MFA defaults to `False`, so login returns a full JWT immediately without an MFA challenge
+
+### Step 3 — Login to get a token
+
+```http
+POST /api/v1/auth/login/
+Content-Type: application/json
+
+{
+  "email": "admin@example.com",
+  "password": "AdminPass123!"
+}
+```
+
+The response contains `access` and `refresh` tokens. Copy the `access` value and use it as the `Authorization: Bearer <access_token>` header in all authenticated requests throughout this guide.
+
+---
+
 ## Phase 1 — Infrastructure
 
 ### GET /api/v1/
@@ -62,7 +117,9 @@ GET /api/v1/health/ HTTP/1.1
 
 ### POST /api/v1/auth/register/
 
-Requires `can_create_user` permission. Creates an inactive user and queues a verification email.
+> **Auth required:** Login first (`POST /auth/login/`) as an `hr_full` or `md` user to get a token, then pass it in the `Authorization` header. This endpoint is not public.
+
+Creates an inactive user and queues a verification email.
 
 ```http
 POST /api/v1/auth/register/ HTTP/1.1
