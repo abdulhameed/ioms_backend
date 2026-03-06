@@ -1,4 +1,4 @@
-.PHONY: up down build migrate makemigrations seed test test-phase shell logs lint createsuperuser collectstatic backup
+.PHONY: up down build migrate makemigrations seed seed-admin test test-phase shell logs lint createsuperuser collectstatic backup
 
 # ── Services ──────────────────────────────────────────────────────────────────
 
@@ -21,6 +21,9 @@ makemigrations:
 
 seed:
 	docker-compose exec backend python manage.py seed_groups
+
+seed-admin:
+	docker-compose exec backend python manage.py create_admin_user
 
 # ── Tests ──────────────────────────────────────────────────────────────────────
 

@@ -36,30 +36,22 @@ make seed      # creates all 13 Django groups (idempotent)
 
 ### Step 2 — Create the first privileged user
 
-There is no public signup. The first `md` or `hr_full` user must be created via the Django shell. Run this from your terminal:
+There is no public signup. Run the seed command to create the default `md` admin user:
 
 ```bash
-docker compose exec backend python manage.py shell -c "
-from apps.users.models import CustomUser
-from django.contrib.auth.models import Group
-
-user = CustomUser.objects.create_user(
-    username='admin',
-    email='admin@example.com',
-    password='AdminPass123!',
-    role='md',
-    permission_level='full',
-    is_active=True,
-)
-user.groups.add(Group.objects.get(name='md'))
-print('Created:', user.email)
-"
+make seed-admin
 ```
 
-**Notes:**
-- `make seed` must be run first so the `md` group exists
-- `role='md'` + `permission_level='full'` grants full system access
-- MFA defaults to `False`, so login returns a full JWT immediately without an MFA challenge
+This creates `admin@example.com` / `AdminPass123!` with `role=md` and full system access. The command is idempotent — it skips silently if the user already exists.
+
+To use different credentials or create an `hr_full` user instead:
+
+```bash
+docker-compose exec backend python manage.py create_admin_user \
+  --email boss@example.com --password Secret99! --role hr_full
+```
+
+**Note:** MFA defaults to `False`, so login returns a full JWT immediately without an MFA challenge.
 
 ### Step 3 — Login to get a token
 
