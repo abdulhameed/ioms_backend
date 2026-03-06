@@ -138,8 +138,8 @@ def test_apr_01_create_project_proposal(api_client, initiator, l1_user, l2_user)
     from apps.approvals.tasks import send_approval_notification
     send_approval_notification(str(wf.id), "submitted")
     assert Notification.objects.filter(
-        resource_id=str(wf.id),
-        notification_type="approval",
+        resource_id=wf.id,
+        notification_type="approval_pending",
     ).exists()
 
 
@@ -565,9 +565,9 @@ def test_send_pending_reminder_task(initiator, l1_user, l2_user):
     count = send_pending_reminder()
     assert count == 1
     assert Notification.objects.filter(
-        user=l1_user,
-        notification_type="approval",
-        resource_id=str(wf.id),
+        recipient=l1_user,
+        notification_type="approval_pending",
+        resource_id=wf.id,
     ).exists()
 
 

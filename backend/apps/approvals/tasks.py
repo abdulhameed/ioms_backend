@@ -87,14 +87,16 @@ def send_approval_notification(self, workflow_id: str, event_type: str):
         if approver:
             recipients.append((approver, "in_app"))
 
+    import uuid as _uuid
+
     for user, channel in recipients:
         Notification.objects.create(
-            user=user,
-            notification_type="approval",
+            recipient=user,
+            notification_type="approval_pending",
             title=title,
             body=body,
             resource_type="ApprovalWorkflow",
-            resource_id=str(workflow_id),
+            resource_id=_uuid.UUID(str(workflow_id)),
             channel=channel,
         )
 
@@ -131,15 +133,15 @@ def send_pending_reminder():
         if not approver:
             continue
         Notification.objects.create(
-            user=approver,
-            notification_type="approval",
+            recipient=approver,
+            notification_type="approval_pending",
             title="Pending approval reminder",
             body=(
                 f"Workflow '{workflow.workflow_type}' has been pending your approval "
                 f"for more than 24 hours."
             ),
             resource_type="ApprovalWorkflow",
-            resource_id=str(workflow.id),
+            resource_id=workflow.id,
             channel="email",
         )
         count += 1

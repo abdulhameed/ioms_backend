@@ -195,12 +195,13 @@ class ApprovalViewSet(ModelViewSet):
 
     @action(detail=False, methods=["get"], url_path="pending-count")
     def pending_count(self, request):
+        from django.db.models import Q
+
         user = request.user
         count = ApprovalWorkflow.objects.filter(
-            status__in=["pending_l1", "pending_l2"],
-        ).filter(
-            models_q(user)
-        ).distinct().count()
+            Q(status="pending_l1", l1_approver=user)
+            | Q(status="pending_l2", l2_approver=user)
+        ).count()
         return Response({"count": count})
 
 
