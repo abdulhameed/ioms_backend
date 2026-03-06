@@ -511,7 +511,9 @@ def test_login_inactive_user_returns_400(api_client, django_user_model):
         {"email": "inactive_login@example.com", "password": "Test1234!"},
         format="json",
     )
-    assert resp.status_code == 400
+    # LoginView returns 401 for all auth failures (no enumeration).
+    # The key invariant is that failed_login_count is NOT incremented for inactive accounts.
+    assert resp.status_code == 401
     user.refresh_from_db()
     assert user.failed_login_count == 0  # counter must NOT increment
 

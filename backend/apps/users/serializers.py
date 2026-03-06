@@ -170,7 +170,9 @@ class LoginSerializer(serializers.Serializer):
             raise serializers.ValidationError({"email": "Invalid credentials."})
 
         if not user.is_active:
-            raise serializers.ValidationError({"email": "Account is not yet activated."})
+            raise serializers.ValidationError(
+                {"email": "Account is not yet activated."}
+            )
 
         if user.is_locked:
             raise serializers.ValidationError(

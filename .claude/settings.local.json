@@ -13,7 +13,11 @@
       "Bash(docker image:*)",
       "Bash(docker build:*)",
       "Bash(docker history:*)",
-      "Bash(docker-compose:*)"
+      "Bash(docker-compose:*)",
+      "Bash(docker compose:*)",
+      "Bash(__NEW_LINE_b57e122a4f175f12__ echo:*)",
+      "Bash(__NEW_LINE_23569c00e9294452__ echo:*)",
+      "Bash(__NEW_LINE_682bfed852cd2ed7__ echo:*)"
     ]
   }
 }
