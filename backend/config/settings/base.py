@@ -250,6 +250,16 @@ CELERY_BEAT_SCHEDULE = {
         "task": "apps.users.tasks.audit_log_archive",
         "schedule": crontab(day_of_month=1, hour=3, minute=0),
     },
+    # Every 30 minutes — expire NairaBnB booking requests past 24h window
+    "expire_pending_booking_requests": {
+        "task": "apps.shortlets.tasks.expire_pending_booking_requests",
+        "schedule": crontab(minute="*/30"),
+    },
+    # Every 15 minutes — push blocked dates to NairaBnB for listed apartments
+    "sync_nairabNb_availability": {
+        "task": "apps.shortlets.tasks.sync_nairabNb_availability",
+        "schedule": crontab(minute="*/15"),
+    },
 }
 
 # ── Email ─────────────────────────────────────────────────────────────────────
@@ -262,6 +272,10 @@ DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'noreply@propms.com')
 # ── Storage ───────────────────────────────────────────────────────────────────
 
 USE_S3 = os.environ.get('USE_S3', 'False') == 'True'
+
+# ── NairaBnB Integration ──────────────────────────────────────────────────────
+
+NAIRABND_WEBHOOK_SECRET = os.environ.get('NAIRABND_WEBHOOK_SECRET', '')
 
 # ── Field Encryption ──────────────────────────────────────────────────────────
 

@@ -1,9 +1,11 @@
 """
-Phase 5 — Shortlets & Asset Management tests.
-Test IDs: SHL-01 through SHL-13.
-See docs/milestone_1_PRD_v2.md section 5.4 for full specifications.
+Phase 5 — Shortlets & Asset Management tests (Milestone 2).
+Test IDs: SHL-01 through SHL-20.
 """
 
+import hashlib
+import hmac
+import json
 import re
 from decimal import Decimal
 
@@ -16,9 +18,15 @@ from apps.shortlets.models import (
     BookingReceipt,
     CautionDeposit,
     Client,
-    ShortletProperty,
+    InventoryItem,
+    InventoryTemplate,
+    NairaBnBBookingRequest,
+    ShortletApartment,
+    YearlyRentalApartment,
 )
 from apps.shortlets.services import BookingService, ClientService, DuplicateClientError
+
+pytestmark = pytest.mark.phase5
 
 # ── URLs ────────────────────────────────────────────────────────────────────────
 
@@ -26,6 +34,8 @@ PROPERTIES_URL = "/api/v1/properties/"
 CLIENTS_URL = "/api/v1/clients/"
 BOOKINGS_URL = "/api/v1/bookings/"
 DEPOSITS_URL = "/api/v1/deposits/"
+BOOKING_REQUESTS_URL = "/api/v1/booking-requests/"
+WEBHOOK_URL = "/api/v1/webhooks/nairabNb/"
 
 
 # ── Fixtures ────────────────────────────────────────────────────────────────────
@@ -87,7 +97,7 @@ def property_data():
 
 @pytest.fixture
 def shortlet_property(django_user_model, admin_user):
-    prop = ShortletProperty.objects.create(
+    prop = ShortletApartment.objects.create(
         name="Test Studio",
         unit_type="studio",
         location="Victoria Island, Lagos",
@@ -126,7 +136,7 @@ def confirmed_booking(shortlet_property, client_obj, admin_user):
     booking = Booking.objects.create(
         booking_code=generate_booking_code(),
         client=client_obj,
-        property=shortlet_property,
+        apartment=shortlet_property,
         check_in_date="2026-04-01",
         check_out_date="2026-04-05",
         rate_type="nightly",
@@ -193,7 +203,7 @@ def test_shl_03_double_booking_rejected(api_client, admin_user, shortlet_propert
 
     payload = {
         "client": str(client_obj.id),
-        "property": str(shortlet_property.id),
+        "apartment": str(shortlet_property.id),
         "check_in_date": "2026-05-10",
         "check_out_date": "2026-05-15",
         "rate_type": "nightly",
@@ -218,7 +228,6 @@ def test_shl_04_concurrent_booking_only_one_succeeds(
     shortlet_property, client_obj, admin_user, django_user_model
 ):
     """SHL-04: Two overlapping bookings via service → only one row created."""
-    # Create second client for second booking attempt
     c2 = Client.objects.create(
         full_name="Second Guest",
         phone="08099998888",
@@ -236,7 +245,7 @@ def test_shl_04_concurrent_booking_only_one_succeeds(
 
     data1 = {
         "client": client_obj,
-        "property": shortlet_property,
+        "apartment": shortlet_property,
         "check_in_date": check_in,
         "check_out_date": check_out,
         "rate_type": "nightly",
@@ -254,7 +263,7 @@ def test_shl_04_concurrent_booking_only_one_succeeds(
 
     # Only one booking row in DB for these dates
     count = Booking.objects.filter(
-        property=shortlet_property,
+        apartment=shortlet_property,
         check_in_date=check_in,
         check_out_date=check_out,
     ).count()
@@ -268,7 +277,7 @@ def test_shl_05_caution_deposit_auto_created(shortlet_property, client_obj, admi
     """SHL-05: CautionDeposit row auto-created with status=held at booking time."""
     data = {
         "client": client_obj,
-        "property": shortlet_property,
+        "apartment": shortlet_property,
         "check_in_date": "2026-07-01",
         "check_out_date": "2026-07-03",
         "rate_type": "nightly",
@@ -291,7 +300,7 @@ def test_shl_06_receipt_pdf_generated(shortlet_property, client_obj, admin_user)
 
     data = {
         "client": client_obj,
-        "property": shortlet_property,
+        "apartment": shortlet_property,
         "check_in_date": "2026-08-01",
         "check_out_date": "2026-08-03",
         "rate_type": "nightly",
@@ -327,8 +336,8 @@ def test_shl_07_check_in(api_client, admin_user, confirmed_booking):
     assert resp.data["status"] == "checked_in"
     assert resp.data["checked_in_at"] is not None
 
-    confirmed_booking.property.refresh_from_db()
-    assert confirmed_booking.property.status == "occupied"
+    confirmed_booking.apartment.refresh_from_db()
+    assert confirmed_booking.apartment.status == "occupied"
 
 
 # ── SHL-08: Check-out (good condition) → status=checked_out; workflow created ─
@@ -348,8 +357,8 @@ def test_shl_08_check_out_no_deduction(api_client, admin_user, hr_full_user, con
     assert resp.status_code == 200
     assert resp.data["status"] == "checked_out"
 
-    confirmed_booking.property.refresh_from_db()
-    assert confirmed_booking.property.status == "available"
+    confirmed_booking.apartment.refresh_from_db()
+    assert confirmed_booking.apartment.status == "available"
 
     # Caution refund workflow created
     from apps.approvals.models import ApprovalWorkflow
@@ -464,6 +473,233 @@ def test_shl_13_front_desk_cannot_export_clients(api_client, front_desk_user):
     assert resp.status_code == 403
 
 
+# ── SHL-14: NairaBnB webhook HMAC validation ──────────────────────────────────
+
+@pytest.mark.django_db
+def test_shl_14_nairabNb_webhook_hmac(api_client, shortlet_property, settings):
+    """SHL-14: Valid HMAC → 201; tampered signature → 403."""
+    settings.NAIRABND_WEBHOOK_SECRET = "testsecret"
+
+    payload = {
+        "nairabNb_reference": "NBNB-TEST-001",
+        "apartment": str(shortlet_property.id),
+        "client_name": "John Doe",
+        "client_email": "john@nairabNb.com",
+        "client_phone": "08012345678",
+        "check_in_date": "2026-06-01",
+        "check_out_date": "2026-06-05",
+        "num_guests": 2,
+        "quoted_amount": "180000.00",
+    }
+    body = json.dumps(payload).encode()
+
+    # Valid signature
+    sig = hmac.new(b"testsecret", body, hashlib.sha256).hexdigest()
+    resp = api_client.post(
+        WEBHOOK_URL,
+        data=body,
+        content_type="application/json",
+        HTTP_X_NAIRABND_SIGNATURE=sig,
+    )
+    assert resp.status_code == 201, resp.data
+    assert NairaBnBBookingRequest.objects.filter(
+        nairabNb_reference="NBNB-TEST-001"
+    ).exists()
+
+    # Tampered signature → 403
+    resp2 = api_client.post(
+        WEBHOOK_URL,
+        data=body,
+        content_type="application/json",
+        HTTP_X_NAIRABND_SIGNATURE="invalidsig",
+    )
+    assert resp2.status_code == 403
+
+
+# ── SHL-15: Accept booking request → Client + Booking + CautionDeposit created ─
+
+@pytest.mark.django_db
+def test_shl_15_accept_booking_request(api_client, admin_user, shortlet_property):
+    """SHL-15: POST /booking-requests/{id}/accept/ → atomic Client+Booking+Deposit."""
+    from apps.shortlets.services import accept_booking_request
+
+    req = NairaBnBBookingRequest.objects.create(
+        nairabNb_reference="NBNB-ACCEPT-001",
+        apartment=shortlet_property,
+        client_name="Ada Obi",
+        client_email="ada@test.com",
+        client_phone="08022223333",
+        check_in_date="2026-07-01",
+        check_out_date="2026-07-07",
+        num_guests=2,
+        quoted_amount=Decimal("210000.00"),
+    )
+
+    booking = accept_booking_request(req.id, accepted_by=admin_user)
+
+    assert booking is not None
+    assert booking.nairabNb_reference == "NBNB-ACCEPT-001"
+    assert CautionDeposit.objects.filter(booking=booking).exists()
+    assert Client.objects.filter(email="ada@test.com").exists()
+
+    req.refresh_from_db()
+    assert req.status == "accepted"
+
+
+# ── SHL-16: Decline booking request ────────────────────────────────────────────
+
+@pytest.mark.django_db
+def test_shl_16_decline_booking_request(api_client, admin_user, shortlet_property):
+    """SHL-16: POST /booking-requests/{id}/decline/ → status=declined, reason saved."""
+    req = NairaBnBBookingRequest.objects.create(
+        nairabNb_reference="NBNB-DECLINE-001",
+        apartment=shortlet_property,
+        client_name="Bola Smith",
+        client_email="bola@test.com",
+        client_phone="08033334444",
+        check_in_date="2026-08-01",
+        check_out_date="2026-08-05",
+        num_guests=1,
+        quoted_amount=Decimal("120000.00"),
+    )
+
+    api_client.force_authenticate(user=admin_user)
+    resp = api_client.post(
+        f"{BOOKING_REQUESTS_URL}{req.id}/decline/",
+        {"declined_reason": "Dates not available."},
+        format="json",
+    )
+    assert resp.status_code == 200
+    req.refresh_from_db()
+    assert req.status == "declined"
+    assert req.declined_reason == "Dates not available."
+
+
+# ── SHL-17: expire_pending_booking_requests task ──────────────────────────────
+
+@pytest.mark.django_db
+def test_shl_17_expire_pending_booking_requests(shortlet_property):
+    """SHL-17: Request past 24h expires_at becomes expired when task runs."""
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    from apps.shortlets.tasks import expire_pending_booking_requests
+
+    past_time = timezone.now() - timedelta(hours=25)
+    req = NairaBnBBookingRequest.objects.create(
+        nairabNb_reference="NBNB-EXPIRE-001",
+        apartment=shortlet_property,
+        client_name="Expired Client",
+        client_email="expired@test.com",
+        client_phone="08044445555",
+        check_in_date="2026-09-01",
+        check_out_date="2026-09-05",
+        num_guests=1,
+        quoted_amount=Decimal("120000.00"),
+        expires_at=past_time,
+    )
+    # Bypass model save() auto-set
+    NairaBnBBookingRequest.objects.filter(pk=req.pk).update(expires_at=past_time)
+
+    count = expire_pending_booking_requests()
+    assert count >= 1
+
+    req.refresh_from_db()
+    assert req.status == "expired"
+
+
+# ── SHL-18: complete-checkout creates verification + MaintenanceRequest ────────
+
+@pytest.mark.django_db
+def test_shl_18_complete_checkout(admin_user, confirmed_booking, shortlet_property):
+    """SHL-18: complete-checkout creates InventoryVerification; damaged → MaintenanceRequest."""
+    from apps.maintenance.models import MaintenanceRequest
+    from apps.shortlets.services import complete_checkout
+
+    # Create an inventory item for the apartment
+    inv_item = InventoryItem.objects.create(
+        apartment=shortlet_property,
+        item_name="Chair",
+        category="furniture",
+        quantity_total=2,
+        quantity_good=2,
+    )
+
+    verification_data = {
+        "cleaning_fee": Decimal("5000.00"),
+        "additional_charges": Decimal("0"),
+        "notes": "One chair damaged",
+        "items": [
+            {
+                "inventory_item": inv_item.pk,
+                "status": "damaged",
+                "estimated_cost": "3000.00",
+                "notes": "Broken leg",
+            }
+        ],
+    }
+
+    verification = complete_checkout(confirmed_booking, verification_data, admin_user)
+
+    assert verification is not None
+    assert verification.cleaning_fee == Decimal("5000.00")
+    assert verification.items.count() == 1
+
+    # Damaged item should auto-create a MaintenanceRequest
+    assert MaintenanceRequest.objects.filter(
+        property=shortlet_property,
+        description__icontains="Chair",
+    ).exists()
+
+
+# ── SHL-19: GET /assets/shortlets/{id}/calendar/ returns blocked ranges ────────
+
+@pytest.mark.django_db
+def test_shl_19_apartment_calendar(api_client, admin_user, shortlet_property, confirmed_booking):
+    """SHL-19: GET /assets/shortlets/{id}/calendar/ returns blocked date ranges."""
+    api_client.force_authenticate(user=admin_user)
+    resp = api_client.get(f"/api/v1/assets/shortlets/{shortlet_property.id}/calendar/")
+    assert resp.status_code == 200
+    assert "blocked_ranges" in resp.data
+    codes = [b["booking_code"] for b in resp.data["blocked_ranges"]]
+    assert confirmed_booking.booking_code in codes
+
+
+# ── SHL-20: Booking with yearly_rental ────────────────────────────────────────
+
+@pytest.mark.django_db
+def test_shl_20_booking_with_yearly_rental(admin_user, client_obj):
+    """SHL-20: Booking with yearly_rental (no apartment) → created correctly."""
+    from apps.shortlets.services import generate_yearly_rental_code
+
+    yr = YearlyRentalApartment.objects.create(
+        name="Office Suite A",
+        unit_type="1_bedroom",
+        location="Victoria Island, Lagos",
+        rate_yearly=Decimal("1800000.00"),
+        deposit_amount=Decimal("150000.00"),
+        lease_status="available",
+        property_code=generate_yearly_rental_code(),
+    )
+
+    data = {
+        "client": client_obj,
+        "yearly_rental": yr,
+        "check_in_date": "2026-01-01",
+        "check_out_date": "2026-12-31",
+        "rate_type": "monthly",
+        "num_guests": 1,
+    }
+    booking = BookingService.create_booking(data, actor=admin_user)
+
+    assert booking.yearly_rental_id == yr.id
+    assert booking.apartment_id is None
+    assert booking.base_amount > 0
+    booking.refresh_from_db()
+    assert booking.status == "confirmed"
+
+
 # ── Edge cases ─────────────────────────────────────────────────────────────────
 
 @pytest.mark.django_db
@@ -474,7 +710,7 @@ def test_checkout_date_before_checkin_returns_400(api_client, admin_user, shortl
         BOOKINGS_URL,
         {
             "client": str(client_obj.id),
-            "property": str(shortlet_property.id),
+            "apartment": str(shortlet_property.id),
             "check_in_date": "2026-09-10",
             "check_out_date": "2026-09-10",  # same day
             "rate_type": "nightly",
@@ -490,7 +726,7 @@ def test_booking_base_amount_nightly_calculated(shortlet_property, client_obj, a
     """base_amount = rate_nightly × nights."""
     data = {
         "client": client_obj,
-        "property": shortlet_property,
+        "apartment": shortlet_property,
         "check_in_date": "2026-10-01",
         "check_out_date": "2026-10-04",  # 3 nights
         "rate_type": "nightly",
@@ -506,7 +742,7 @@ def test_booking_base_amount_weekly_calculated(shortlet_property, client_obj, ad
     """base_amount = rate_weekly × weeks (rounded up)."""
     data = {
         "client": client_obj,
-        "property": shortlet_property,
+        "apartment": shortlet_property,
         "check_in_date": "2026-11-01",
         "check_out_date": "2026-11-09",  # 8 days = 2 weeks (ceil)
         "rate_type": "weekly",
@@ -521,7 +757,7 @@ def test_booking_code_format(shortlet_property, client_obj, admin_user):
     """booking_code matches BKG-YYYY-NNNN pattern."""
     data = {
         "client": client_obj,
-        "property": shortlet_property,
+        "apartment": shortlet_property,
         "check_in_date": "2026-12-01",
         "check_out_date": "2026-12-03",
         "rate_type": "nightly",
@@ -551,8 +787,6 @@ def test_check_out_wrong_status_raises(confirmed_booking, admin_user):
 def test_duplicate_client_force_bypass(api_client, admin_user):
     """
     force=true bypasses the duplicate-warning 409.
-    Flow: first attempt with phone A → 409; re-submit with corrected phone B
-    and force=true → 201 (no second duplicate found).
     """
     api_client.force_authenticate(user=admin_user)
     api_client.post(
@@ -560,7 +794,7 @@ def test_duplicate_client_force_bypass(api_client, admin_user):
         {"full_name": "John Doe", "phone": "08055556666", "email": "john@test.com"},
         format="json",
     )
-    # Same email triggers 409 (duplicate found)
+    # Same email triggers 409
     dup_resp = api_client.post(
         CLIENTS_URL,
         {"full_name": "John Doe Alt", "phone": "08066667777", "email": "john@test.com"},
@@ -627,13 +861,12 @@ def test_receipt_404_before_task_runs(api_client, admin_user, shortlet_property,
     """GET receipt before task runs → 404."""
     data = {
         "client": client_obj,
-        "property": shortlet_property,
+        "apartment": shortlet_property,
         "check_in_date": "2027-01-01",
         "check_out_date": "2027-01-03",
         "rate_type": "nightly",
         "num_guests": 1,
     }
-    # Create booking but don't run the task
     booking = BookingService.create_booking(data, actor=admin_user)
     # Delete the auto-created receipt if celery ran synchronously in test
     BookingReceipt.objects.filter(booking=booking).delete()
@@ -678,7 +911,7 @@ def test_booking_base_amount_monthly_calculated(shortlet_property, client_obj, a
     """base_amount = rate_monthly × months (min 1)."""
     data = {
         "client": client_obj,
-        "property": shortlet_property,
+        "apartment": shortlet_property,
         "check_in_date": "2026-10-01",
         "check_out_date": "2026-10-31",  # 30 days = 1 month
         "rate_type": "monthly",
@@ -696,7 +929,7 @@ def test_hr_full_cannot_create_booking(api_client, hr_full_user, shortlet_proper
         BOOKINGS_URL,
         {
             "client": str(client_obj.id),
-            "property": str(shortlet_property.id),
+            "apartment": str(shortlet_property.id),
             "check_in_date": "2026-10-01",
             "check_out_date": "2026-10-04",
             "rate_type": "nightly",
@@ -712,7 +945,6 @@ def test_checked_out_booking_not_in_availability(
     api_client, admin_user, hr_full_user, shortlet_property, confirmed_booking
 ):
     """Checked-out bookings do NOT appear in availability blocked ranges."""
-    # Check in then check out
     BookingService.check_in(confirmed_booking, actor=admin_user)
     BookingService.check_out(confirmed_booking, actor=admin_user, condition="good")
 
@@ -744,7 +976,7 @@ def test_deduction_exceeds_deposit_clamps_refund_to_zero(
 @pytest.mark.django_db
 def test_booking_monthly_rate_missing_raises(client_obj, admin_user):
     """Property with no monthly rate + monthly booking raises ValueError."""
-    prop = ShortletProperty.objects.create(
+    prop = ShortletApartment.objects.create(
         name="No Monthly Rate Studio",
         unit_type="studio",
         location="Test",
@@ -754,7 +986,7 @@ def test_booking_monthly_rate_missing_raises(client_obj, admin_user):
     )
     data = {
         "client": client_obj,
-        "property": prop,
+        "apartment": prop,
         "check_in_date": "2026-11-01",
         "check_out_date": "2026-12-01",
         "rate_type": "monthly",
@@ -783,12 +1015,12 @@ def test_property_code_unique_across_properties(api_client, admin_user, property
 def test_booking_list_filter_by_property(
     api_client, admin_user, shortlet_property, client_obj, confirmed_booking
 ):
-    """Filter bookings by property_id returns only that property's bookings."""
+    """Filter bookings by apartment_id returns only that apartment's bookings."""
     api_client.force_authenticate(user=admin_user)
-    resp = api_client.get(f"{BOOKINGS_URL}?property={shortlet_property.id}")
+    resp = api_client.get(f"{BOOKINGS_URL}?apartment={shortlet_property.id}")
     assert resp.status_code == 200
     for b in resp.data:
-        assert str(b["property"]) == str(shortlet_property.id)
+        assert str(b["apartment"]) == str(shortlet_property.id)
 
 
 @pytest.mark.django_db
@@ -867,8 +1099,6 @@ def test_non_front_desk_cannot_create_client(api_client, hr_full_user):
     assert resp.status_code == 403
 
 
-# ── Edge cases: check-in twice, property status transitions, zero caution ──────
-
 @pytest.mark.django_db
 def test_check_in_twice_returns_400(api_client, admin_user, confirmed_booking):
     """Calling check-in on an already checked-in booking → 400."""
@@ -885,31 +1115,31 @@ def test_check_in_twice_returns_400(api_client, admin_user, confirmed_booking):
 
 @pytest.mark.django_db
 def test_property_occupied_after_checkin(confirmed_booking, admin_user):
-    """ShortletProperty status becomes 'occupied' immediately after check-in."""
+    """ShortletApartment status becomes 'occupied' immediately after check-in."""
     BookingService.check_in(confirmed_booking, actor=admin_user)
-    confirmed_booking.property.refresh_from_db()
-    assert confirmed_booking.property.status == "occupied"
+    confirmed_booking.apartment.refresh_from_db()
+    assert confirmed_booking.apartment.status == "occupied"
 
 
 @pytest.mark.django_db
 def test_property_available_after_checkout(confirmed_booking, admin_user, hr_full_user):
-    """ShortletProperty status returns to 'available' after check-out."""
+    """ShortletApartment status returns to 'available' after check-out."""
     from unittest.mock import patch
 
     BookingService.check_in(confirmed_booking, actor=admin_user)
     with patch("apps.approvals.tasks.send_approval_notification.delay"):
         BookingService.check_out(confirmed_booking, actor=admin_user, condition="good")
 
-    confirmed_booking.property.refresh_from_db()
-    assert confirmed_booking.property.status == "available"
+    confirmed_booking.apartment.refresh_from_db()
+    assert confirmed_booking.apartment.status == "available"
 
 
 @pytest.mark.django_db
 def test_zero_caution_deposit_total_equals_base(admin_user):
     """A property with caution_deposit_amount=0 → booking total = base_amount only."""
-    from apps.shortlets.services import generate_property_code, generate_client_code
+    from apps.shortlets.services import generate_client_code, generate_property_code
 
-    prop = ShortletProperty.objects.create(
+    prop = ShortletApartment.objects.create(
         name="Budget Room",
         unit_type="studio",
         location="Surulere, Lagos",
@@ -933,7 +1163,7 @@ def test_zero_caution_deposit_total_equals_base(admin_user):
     with patch("apps.shortlets.tasks.generate_receipt_pdf.delay"):
         booking = BookingService.create_booking(
             {
-                "property": prop,
+                "apartment": prop,
                 "client": client,
                 "check_in_date": "2026-05-01",
                 "check_out_date": "2026-05-02",
