@@ -35,6 +35,8 @@ make createsuperuser
 - API root: http://localhost:8000/api/v1/
 - Health check: http://localhost:8000/api/v1/health/
 - Django admin: http://localhost:8000/admin/
+- Swagger UI: http://localhost:8000/api/schema/swagger-ui/
+- ReDoc: http://localhost:8000/api/schema/redoc/
 
 ---
 
@@ -99,7 +101,8 @@ ioms_backend/
 ├── .env.example               # Copy to .env and fill in values
 ├── Makefile                   # Dev shortcuts
 ├── docs/
-│   └── milestone_1_PRD_v2.md  # Implementation PRD with phase-by-phase plan
+│   ├── milestone_1_PRD_v2.md  # Implementation PRD with phase-by-phase plan
+│   └── api_testing_guide.md   # Manual API testing guide (curl + Postman examples)
 ├── nginx/
 │   └── nginx.conf             # Production reverse proxy config
 └── backend/
