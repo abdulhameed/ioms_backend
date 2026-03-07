@@ -728,7 +728,7 @@ def test_booking_checkin_reminder_with_bookings(django_user_model):
     Booking.objects.create(
         booking_code=generate_booking_code(),
         client=client,
-        property=prop,
+        apartment=prop,
         check_in_date=tomorrow,
         check_out_date=tomorrow + timedelta(days=2),
         rate_type="nightly",
@@ -784,7 +784,7 @@ def test_booking_checkin_reminder_excludes_checked_in_bookings(django_user_model
     Booking.objects.create(
         booking_code=generate_booking_code(),
         client=client,
-        property=prop,
+        apartment=prop,
         check_in_date=tomorrow,
         check_out_date=tomorrow + timedelta(days=3),
         rate_type="nightly",
@@ -836,7 +836,7 @@ def test_booking_checkin_reminder_no_front_desk_users(django_user_model):
     Booking.objects.create(
         booking_code=generate_booking_code(),
         client=client,
-        property=prop,
+        apartment=prop,
         check_in_date=tomorrow,
         check_out_date=tomorrow + timedelta(days=1),
         rate_type="nightly",
