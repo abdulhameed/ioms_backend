@@ -1,8 +1,9 @@
 """
-Shortlets signals — Phase 5.
+Shortlets signals — Milestone 2.
 
-Listens for ApprovalWorkflow changes to sync CautionDeposit status
-and notify the client when a refund is approved.
+Signals:
+  - ApprovalWorkflow post_save → sync CautionDeposit status + notify
+  - ShortletApartment post_save (created) → auto-create InventoryItems from templates
 """
 
 import logging
@@ -55,3 +56,41 @@ def _handle_caution_workflow(workflow):
                 resource_type="CautionDeposit",
                 resource_id=deposit.id,
             )
+
+
+@receiver(post_save, sender="shortlets.ShortletApartment")
+def auto_create_inventory_items(sender, instance, created, **kwargs):
+    """On new ShortletApartment, bulk-create InventoryItems from matching templates."""
+    if not created:
+        return
+    _populate_inventory_from_templates(instance)
+
+
+def _populate_inventory_from_templates(apartment):
+    from apps.shortlets.models import InventoryItem, InventoryTemplate
+
+    # Templates with no apartment/yearly_rental FK are unit_type-level blueprints
+    templates = InventoryTemplate.objects.filter(
+        apartment__isnull=True,
+        yearly_rental__isnull=True,
+        unit_type=apartment.unit_type,
+    )
+    if not templates.exists():
+        return
+
+    items = [
+        InventoryItem(
+            apartment=apartment,
+            item_name=t.item_name,
+            category=t.category,
+            quantity_total=t.quantity_expected,
+            quantity_good=t.quantity_expected,
+        )
+        for t in templates
+    ]
+    InventoryItem.objects.bulk_create(items)
+    logger.info(
+        "Auto-created %d inventory items for apartment %s from templates",
+        len(items),
+        apartment.id,
+    )

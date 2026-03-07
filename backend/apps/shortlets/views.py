@@ -1,5 +1,5 @@
 """
-Shortlets views — Phase 5.
+Shortlets views — Milestone 2.
 """
 
 import csv
@@ -8,7 +8,7 @@ import logging
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from rest_framework import status
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -17,7 +17,10 @@ from apps.shortlets.models import (
     BookingReceipt,
     CautionDeposit,
     Client,
-    ShortletProperty,
+    NairaBnBBookingRequest,
+    OfficeItem,
+    ShortletApartment,
+    YearlyRentalApartment,
 )
 from apps.shortlets.permissions import (
     CanExportClients,
@@ -32,6 +35,8 @@ from apps.shortlets.serializers import (
     BookingCreateSerializer,
     BookingDetailSerializer,
     BookingListSerializer,
+    BookingRequestDeclineSerializer,
+    CautionDepositDisputeSerializer,
     CautionDepositSerializer,
     CautionDepositUpdateSerializer,
     CheckOutSerializer,
@@ -39,23 +44,37 @@ from apps.shortlets.serializers import (
     ClientDetailSerializer,
     ClientListSerializer,
     ClientUpdateSerializer,
+    CompleteCheckoutSerializer,
+    InventoryItemSerializer,
+    InventoryVerificationSerializer,
+    NairaBnBBookingRequestSerializer,
+    OfficeItemCreateSerializer,
+    OfficeItemSerializer,
     PropertyCreateSerializer,
     PropertyDetailSerializer,
     PropertyListSerializer,
     PropertyUpdateSerializer,
+    YearlyRentalApartmentSerializer,
+    YearlyRentalCreateSerializer,
 )
 from apps.shortlets.services import (
     BookingConflictError,
     BookingService,
     ClientService,
     DuplicateClientError,
+    accept_booking_request,
+    complete_checkout,
+    generate_checkout_pdf,
+    generate_office_item_code,
     generate_property_code,
+    generate_yearly_rental_code,
+    validate_nairabNb_signature,
 )
 
 logger = logging.getLogger(__name__)
 
 
-# ── ShortletProperty ────────────────────────────────────────────────────────────
+# ── ShortletApartment ───────────────────────────────────────────────────────────
 
 
 class PropertyListCreateView(APIView):
@@ -65,7 +84,7 @@ class PropertyListCreateView(APIView):
         return [IsAuthenticated()]
 
     def get(self, request):
-        qs = ShortletProperty.objects.all()
+        qs = ShortletApartment.objects.all()
         unit_type = request.query_params.get("unit_type")
         status_filter = request.query_params.get("status")
         price_min = request.query_params.get("price_min")
@@ -100,11 +119,11 @@ class PropertyDetailView(APIView):
         return [IsAuthenticated()]
 
     def get(self, request, pk):
-        prop = get_object_or_404(ShortletProperty, pk=pk)
+        prop = get_object_or_404(ShortletApartment, pk=pk)
         return Response(PropertyDetailSerializer(prop).data)
 
     def put(self, request, pk):
-        prop = get_object_or_404(ShortletProperty, pk=pk)
+        prop = get_object_or_404(ShortletApartment, pk=pk)
         ser = PropertyUpdateSerializer(prop, data=request.data, partial=True)
         ser.is_valid(raise_exception=True)
         ser.save()
@@ -115,9 +134,9 @@ class PropertyAvailabilityView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, pk):
-        prop = get_object_or_404(ShortletProperty, pk=pk)
+        prop = get_object_or_404(ShortletApartment, pk=pk)
         bookings = Booking.objects.filter(
-            property=prop, status__in=["confirmed", "checked_in"]
+            apartment=prop, status__in=["confirmed", "checked_in"]
         ).values("check_in_date", "check_out_date", "booking_code")
         blocked = [
             {
@@ -128,6 +147,119 @@ class PropertyAvailabilityView(APIView):
             for b in bookings
         ]
         return Response({"property_id": str(pk), "blocked_ranges": blocked})
+
+
+class PropertyCalendarView(APIView):
+    """Return blocked date ranges for confirmed/checked-in bookings (calendar view)."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        prop = get_object_or_404(ShortletApartment, pk=pk)
+        bookings = Booking.objects.filter(
+            apartment=prop, status__in=["confirmed", "checked_in"]
+        ).values("check_in_date", "check_out_date", "booking_code", "status")
+        blocked = [
+            {
+                "check_in": b["check_in_date"],
+                "check_out": b["check_out_date"],
+                "booking_code": b["booking_code"],
+                "status": b["status"],
+            }
+            for b in bookings
+        ]
+        return Response({"apartment_id": str(pk), "blocked_ranges": blocked})
+
+
+# ── YearlyRentalApartment ───────────────────────────────────────────────────────
+
+
+class YearlyRentalListCreateView(APIView):
+    def get_permissions(self):
+        if self.request.method == "POST":
+            return [CanManageProperty()]
+        return [IsAuthenticated()]
+
+    def get(self, request):
+        qs = YearlyRentalApartment.objects.all()
+        lease_status = request.query_params.get("lease_status")
+        if lease_status:
+            qs = qs.filter(lease_status=lease_status)
+        return Response(YearlyRentalApartmentSerializer(qs, many=True).data)
+
+    def post(self, request):
+        ser = YearlyRentalCreateSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        yr = ser.save()
+        yr.property_code = generate_yearly_rental_code()
+        yr.save(update_fields=["property_code"])
+        return Response(
+            YearlyRentalApartmentSerializer(yr).data, status=status.HTTP_201_CREATED
+        )
+
+
+class YearlyRentalDetailView(APIView):
+    def get_permissions(self):
+        if self.request.method == "PUT":
+            return [CanManageProperty()]
+        return [IsAuthenticated()]
+
+    def get(self, request, pk):
+        yr = get_object_or_404(YearlyRentalApartment, pk=pk)
+        return Response(YearlyRentalApartmentSerializer(yr).data)
+
+    def put(self, request, pk):
+        yr = get_object_or_404(YearlyRentalApartment, pk=pk)
+        ser = YearlyRentalCreateSerializer(yr, data=request.data, partial=True)
+        ser.is_valid(raise_exception=True)
+        ser.save()
+        return Response(YearlyRentalApartmentSerializer(yr).data)
+
+
+# ── OfficeItem ──────────────────────────────────────────────────────────────────
+
+
+class OfficeItemListCreateView(APIView):
+    def get_permissions(self):
+        if self.request.method == "POST":
+            return [CanManageProperty()]
+        return [IsAuthenticated()]
+
+    def get(self, request):
+        qs = OfficeItem.objects.all()
+        category = request.query_params.get("category")
+        condition = request.query_params.get("condition")
+        if category:
+            qs = qs.filter(item_category=category)
+        if condition:
+            qs = qs.filter(condition=condition)
+        return Response(OfficeItemSerializer(qs, many=True).data)
+
+    def post(self, request):
+        ser = OfficeItemCreateSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        item = ser.save()
+        item.item_code = generate_office_item_code()
+        item.save(update_fields=["item_code"])
+        return Response(OfficeItemSerializer(item).data, status=status.HTTP_201_CREATED)
+
+
+class OfficeItemDetailView(APIView):
+    def get_permissions(self):
+        if self.request.method == "PUT":
+            return [CanManageProperty()]
+        return [IsAuthenticated()]
+
+    def get(self, request, pk):
+        item = get_object_or_404(OfficeItem, pk=pk)
+        return Response(OfficeItemSerializer(item).data)
+
+    def put(self, request, pk):
+        item = get_object_or_404(OfficeItem, pk=pk)
+        ser = OfficeItemCreateSerializer(item, data=request.data, partial=True)
+        ser.is_valid(raise_exception=True)
+        ser.save()
+        return Response(OfficeItemSerializer(item).data)
 
 
 # ── Client ─────────────────────────────────────────────────────────────────────
@@ -236,16 +368,16 @@ class BookingListCreateView(APIView):
         return [CanViewBooking()]
 
     def get(self, request):
-        qs = Booking.objects.select_related("client", "property")
+        qs = Booking.objects.select_related("client", "apartment", "yearly_rental")
         status_filter = request.query_params.get("status")
-        property_id = request.query_params.get("property")
+        apartment_id = request.query_params.get("apartment")
         date_from = request.query_params.get("date_from")
         date_to = request.query_params.get("date_to")
 
         if status_filter:
             qs = qs.filter(status=status_filter)
-        if property_id:
-            qs = qs.filter(property_id=property_id)
+        if apartment_id:
+            qs = qs.filter(apartment_id=apartment_id)
         if date_from:
             qs = qs.filter(check_in_date__gte=date_from)
         if date_to:
@@ -342,6 +474,63 @@ class BookingReceiptView(APIView):
         return response
 
 
+class BookingInventoryChecklistView(APIView):
+    """GET — return inventory items for the booking's apartment."""
+
+    permission_classes = [CanManageBooking]
+
+    def get(self, request, pk):
+        booking = get_object_or_404(Booking, pk=pk)
+        if booking.apartment_id:
+            items = booking.apartment.inventory_items.all()
+        elif booking.yearly_rental_id:
+            items = booking.yearly_rental.inventory_items.all()
+        else:
+            items = []
+        return Response({"items": InventoryItemSerializer(items, many=True).data})
+
+
+class BookingCompleteCheckoutView(APIView):
+    """POST — create InventoryVerification; flag damaged/missing items → MaintenanceRequest."""
+
+    permission_classes = [CanManageBooking]
+
+    def post(self, request, pk):
+        booking = get_object_or_404(Booking, pk=pk)
+        ser = CompleteCheckoutSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+
+        try:
+            verification = complete_checkout(booking, ser.validated_data, request.user)
+        except Exception as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(
+            InventoryVerificationSerializer(verification).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class BookingCheckoutReportView(APIView):
+    """GET — return checkout PDF report."""
+
+    permission_classes = [CanManageBooking]
+
+    def get(self, request, pk):
+        booking = get_object_or_404(
+            Booking.objects.prefetch_related(
+                "inventory_verifications__items__inventory_item"
+            ),
+            pk=pk,
+        )
+        pdf_bytes = generate_checkout_pdf(booking)
+        response = HttpResponse(pdf_bytes, content_type="application/pdf")
+        response["Content-Disposition"] = (
+            f'inline; filename="checkout-{booking.booking_code or str(booking.id)}.pdf"'
+        )
+        return response
+
+
 # ── CautionDeposit ─────────────────────────────────────────────────────────────
 
 
@@ -372,3 +561,90 @@ class DepositDetailView(APIView):
         ser.is_valid(raise_exception=True)
         ser.save()
         return Response(CautionDepositSerializer(deposit).data)
+
+
+class DepositDisputeView(APIView):
+    """POST — flag a deposit as disputed with a reason."""
+
+    permission_classes = [CanManageBooking]
+
+    def post(self, request, pk):
+        deposit = get_object_or_404(CautionDeposit, pk=pk)
+        ser = CautionDepositDisputeSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+
+        deposit.status = "disputed"
+        deposit.dispute_reason = ser.validated_data["dispute_reason"]
+        deposit.save(update_fields=["status", "dispute_reason", "updated_at"])
+        return Response(CautionDepositSerializer(deposit).data)
+
+
+# ── NairaBnB Webhook ───────────────────────────────────────────────────────────
+
+
+class NairaBnBWebhookView(APIView):
+    """
+    POST — receive inbound booking requests from NairaBnB channel.
+    Validates HMAC-SHA256 signature; creates NairaBnBBookingRequest on success.
+    """
+
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        if not validate_nairabNb_signature(request):
+            return Response(
+                {"error": "invalid_signature"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        ser = NairaBnBBookingRequestSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        booking_request = ser.save()
+        return Response(
+            NairaBnBBookingRequestSerializer(booking_request).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+# ── BookingRequest ─────────────────────────────────────────────────────────────
+
+
+class BookingRequestListView(APIView):
+    permission_classes = [CanManageBooking]
+
+    def get(self, request):
+        qs = NairaBnBBookingRequest.objects.select_related("apartment")
+        status_filter = request.query_params.get("status")
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+        return Response(NairaBnBBookingRequestSerializer(qs, many=True).data)
+
+
+class BookingRequestAcceptView(APIView):
+    permission_classes = [CanManageBooking]
+
+    def post(self, request, pk):
+        booking_request = get_object_or_404(NairaBnBBookingRequest, pk=pk)
+        try:
+            booking = accept_booking_request(booking_request.id, accepted_by=request.user)
+        except ValueError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(BookingDetailSerializer(booking).data, status=status.HTTP_201_CREATED)
+
+
+class BookingRequestDeclineView(APIView):
+    permission_classes = [CanManageBooking]
+
+    def post(self, request, pk):
+        booking_request = get_object_or_404(NairaBnBBookingRequest, pk=pk)
+        if booking_request.status != "pending_review":
+            return Response(
+                {"error": f"Cannot decline a request with status '{booking_request.status}'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        ser = BookingRequestDeclineSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        booking_request.status = "declined"
+        booking_request.declined_reason = ser.validated_data.get("declined_reason", "")
+        booking_request.save(update_fields=["status", "declined_reason", "updated_at"])
+        return Response(NairaBnBBookingRequestSerializer(booking_request).data)
