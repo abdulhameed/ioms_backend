@@ -1527,4 +1527,4 @@ Authorization: Bearer <access_token>
 
 ---
 
-*Last updated: Phase 2 complete*
+*Last updated: All phases complete — Swagger UI & ReDoc available at `/api/schema/`*
