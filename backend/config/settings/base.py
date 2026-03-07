@@ -197,8 +197,46 @@ CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = 'UTC'
 CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'
 
-# CELERY_BEAT_SCHEDULE — owned by Phase 7; registered in full at that point.
-CELERY_BEAT_SCHEDULE = {}
+# CELERY_BEAT_SCHEDULE — Phase 7 owns all registrations.
+from celery.schedules import crontab  # noqa: E402
+
+CELERY_BEAT_SCHEDULE = {
+    # Every 30 minutes — flag overdue maintenance requests and send SLA alerts
+    "check_sla_breaches": {
+        "task": "apps.maintenance.tasks.check_sla_breaches",
+        "schedule": crontab(minute="*/30"),
+    },
+    # Every hour — detect 80%/95% budget utilization and notify PM + MD
+    "check_budget_alerts": {
+        "task": "apps.projects.tasks.check_budget_alerts",
+        "schedule": crontab(minute=0),
+    },
+    # Daily 8:00 AM — notify Front Desk of tomorrow's check-ins
+    "booking_checkin_reminder": {
+        "task": "apps.notifications.tasks.booking_checkin_reminder",
+        "schedule": crontab(hour=8, minute=0),
+    },
+    # Daily 9:00 AM — notify PM + MD of projects due within 7 days
+    "project_deadline_alert": {
+        "task": "apps.notifications.tasks.project_deadline_alert",
+        "schedule": crontab(hour=9, minute=0),
+    },
+    # Every 4 hours — remind approvers of items pending > 24 hours
+    "pending_approval_reminder": {
+        "task": "apps.approvals.tasks.send_pending_reminder",
+        "schedule": crontab(minute=0, hour="*/4"),
+    },
+    # Every 60 seconds — rebuild Redis dashboard cache
+    "dashboard_cache_refresh": {
+        "task": "apps.projects.tasks.dashboard_cache_refresh",
+        "schedule": 60.0,
+    },
+    # Monthly, 1st at 3:00 AM — archive audit logs older than 7 years
+    "audit_log_archive": {
+        "task": "apps.users.tasks.audit_log_archive",
+        "schedule": crontab(day_of_month=1, hour=3, minute=0),
+    },
+}
 
 # ── Email ─────────────────────────────────────────────────────────────────────
 

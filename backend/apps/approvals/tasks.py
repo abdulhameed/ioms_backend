@@ -88,17 +88,34 @@ def send_approval_notification(self, workflow_id: str, event_type: str):
             recipients.append((approver, "in_app"))
 
     import uuid as _uuid
+    from django.conf import settings
+    from django.core.mail import send_mail
+
+    # Decide notification_type: decision events use approval_decided, others approval_pending
+    DECIDED_EVENTS = {"approved", "l1_rejected", "l2_rejected", "withdrawn"}
+    nfy_type = "approval_decided" if event_type in DECIDED_EVENTS else "approval_pending"
 
     for user, channel in recipients:
         Notification.objects.create(
             recipient=user,
-            notification_type="approval_pending",
+            notification_type=nfy_type,
             title=title,
             body=body,
             resource_type="ApprovalWorkflow",
             resource_id=_uuid.UUID(str(workflow_id)),
             channel=channel,
         )
+        if channel == "email":
+            try:
+                send_mail(
+                    subject=f"[IOMS] {title}",
+                    message=body,
+                    from_email=settings.DEFAULT_FROM_EMAIL,
+                    recipient_list=[user.email],
+                    fail_silently=True,
+                )
+            except Exception:
+                pass
 
     logger.info(
         "send_approval_notification: %s notifications for workflow %s event=%s",

@@ -61,3 +61,23 @@ def send_account_unlock_email(self, user_id):
         )
     except Exception as exc:
         raise self.retry(exc=exc)
+
+
+@shared_task
+def audit_log_archive():
+    """
+    Runs monthly on the 1st at 3:00 AM (registered in beat schedule by Phase 7).
+    Deletes AuditLog entries older than 7 years (cold storage / compliance policy).
+    """
+    import logging
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    from apps.users.models import AuditLog
+
+    _logger = logging.getLogger(__name__)
+    cutoff = timezone.now() - timedelta(days=365 * 7)
+    deleted_count, _ = AuditLog.objects.filter(timestamp__lt=cutoff).delete()
+    _logger.info("audit_log_archive: deleted %d audit log entries older than 7 years", deleted_count)
+    return deleted_count

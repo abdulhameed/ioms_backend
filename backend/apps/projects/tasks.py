@@ -1,10 +1,12 @@
 """
-Projects Celery tasks — Phase 4.
+Projects Celery tasks — Phase 4 / Phase 7.
 
 Tasks:
-  check_budget_alerts — scans ProjectBudgetLines and fires notifications at
-                        80% and 95% utilization thresholds (no duplicates).
-                        Registered in CELERY_BEAT_SCHEDULE in Phase 7.
+  check_budget_alerts    — scans ProjectBudgetLines and fires notifications at
+                           80% and 95% utilization thresholds (no duplicates).
+                           Registered in CELERY_BEAT_SCHEDULE in Phase 7.
+  dashboard_cache_refresh — rebuilds Redis cache for dashboard KPIs every 60s.
+                            Registered in CELERY_BEAT_SCHEDULE in Phase 7.
 """
 
 import logging
@@ -106,3 +108,26 @@ def check_budget_alerts():
 
     logger.info("check_budget_alerts: created %d notifications", notifications_created)
     return notifications_created
+
+
+@shared_task
+def dashboard_cache_refresh():
+    """
+    Rebuilds the Redis dashboard cache (runs every 60 seconds via beat schedule).
+    Keeps the dashboard KPIs fresh without blocking API requests.
+    """
+    from django.core.cache import cache
+
+    from apps.projects.models import Project
+
+    statuses = [
+        "draft", "pending_l1", "pending_l2", "planning",
+        "in_progress", "on_hold", "completed", "cancelled",
+    ]
+    data = {
+        "total": Project.objects.count(),
+        "by_status": {s: Project.objects.filter(status=s).count() for s in statuses},
+    }
+    cache.set("projects_dashboard", data, timeout=120)
+    logger.info("dashboard_cache_refresh: cache updated")
+    return True
