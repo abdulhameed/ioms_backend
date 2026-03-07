@@ -181,6 +181,17 @@ SIMPLE_JWT = {
     'USER_ID_CLAIM': 'user_id',
 }
 
+# ── drf-spectacular (OpenAPI / Swagger) ───────────────────────────────────────
+
+SPECTACULAR_SETTINGS = {
+    'TITLE': 'IOMS API',
+    'DESCRIPTION': 'Integrated Operations Management System — REST API',
+    'VERSION': 'v1',
+    'SERVE_INCLUDE_SCHEMA': False,
+    'SCHEMA_PATH_PREFIX': '/api/v1',
+    'COMPONENT_SPLIT_REQUEST': True,
+}
+
 # ── CORS ──────────────────────────────────────────────────────────────────────
 
 CORS_ALLOWED_ORIGINS = os.environ.get(
