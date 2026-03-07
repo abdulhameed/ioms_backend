@@ -1,5 +1,5 @@
 """
-Shortlets serializers — Phase 5.
+Shortlets serializers — Milestone 2.
 """
 
 from rest_framework import serializers
@@ -9,16 +9,23 @@ from apps.shortlets.models import (
     BookingReceipt,
     CautionDeposit,
     Client,
-    ShortletProperty,
+    InventoryItem,
+    InventoryTemplate,
+    InventoryVerification,
+    InventoryVerificationItem,
+    NairaBnBBookingRequest,
+    OfficeItem,
+    ShortletApartment,
+    YearlyRentalApartment,
 )
 
 
-# ── ShortletProperty ────────────────────────────────────────────────────────────
+# ── ShortletApartment ───────────────────────────────────────────────────────────
 
 
 class PropertyListSerializer(serializers.ModelSerializer):
     class Meta:
-        model = ShortletProperty
+        model = ShortletApartment
         fields = [
             "id",
             "property_code",
@@ -30,13 +37,14 @@ class PropertyListSerializer(serializers.ModelSerializer):
             "rate_weekly",
             "rate_monthly",
             "caution_deposit_amount",
+            "nairabNb_listing_id",
         ]
         read_only_fields = ["id", "property_code"]
 
 
 class PropertyDetailSerializer(serializers.ModelSerializer):
     class Meta:
-        model = ShortletProperty
+        model = ShortletApartment
         fields = [
             "id",
             "property_code",
@@ -50,6 +58,7 @@ class PropertyDetailSerializer(serializers.ModelSerializer):
             "description",
             "caution_deposit_amount",
             "status",
+            "nairabNb_listing_id",
             "created_at",
             "updated_at",
         ]
@@ -58,7 +67,7 @@ class PropertyDetailSerializer(serializers.ModelSerializer):
 
 class PropertyCreateSerializer(serializers.ModelSerializer):
     class Meta:
-        model = ShortletProperty
+        model = ShortletApartment
         fields = [
             "name",
             "unit_type",
@@ -70,12 +79,13 @@ class PropertyCreateSerializer(serializers.ModelSerializer):
             "description",
             "caution_deposit_amount",
             "status",
+            "nairabNb_listing_id",
         ]
 
 
 class PropertyUpdateSerializer(serializers.ModelSerializer):
     class Meta:
-        model = ShortletProperty
+        model = ShortletApartment
         fields = [
             "name",
             "unit_type",
@@ -87,6 +97,81 @@ class PropertyUpdateSerializer(serializers.ModelSerializer):
             "description",
             "caution_deposit_amount",
             "status",
+            "nairabNb_listing_id",
+        ]
+
+
+# ── YearlyRentalApartment ───────────────────────────────────────────────────────
+
+
+class YearlyRentalApartmentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = YearlyRentalApartment
+        fields = [
+            "id",
+            "property_code",
+            "name",
+            "unit_type",
+            "location",
+            "rate_yearly",
+            "deposit_amount",
+            "lease_status",
+            "current_tenant",
+            "rent_due_date",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "property_code", "created_at", "updated_at"]
+
+
+class YearlyRentalCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = YearlyRentalApartment
+        fields = [
+            "name",
+            "unit_type",
+            "location",
+            "rate_yearly",
+            "deposit_amount",
+            "lease_status",
+            "current_tenant",
+            "rent_due_date",
+        ]
+
+
+# ── OfficeItem ──────────────────────────────────────────────────────────────────
+
+
+class OfficeItemSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = OfficeItem
+        fields = [
+            "id",
+            "item_code",
+            "item_name",
+            "item_category",
+            "department",
+            "condition",
+            "location_detail",
+            "acquired_date",
+            "purchase_cost",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "item_code", "created_at", "updated_at"]
+
+
+class OfficeItemCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = OfficeItem
+        fields = [
+            "item_name",
+            "item_category",
+            "department",
+            "condition",
+            "location_detail",
+            "acquired_date",
+            "purchase_cost",
         ]
 
 
@@ -187,7 +272,7 @@ class ClientUpdateSerializer(serializers.ModelSerializer):
 
 class BookingListSerializer(serializers.ModelSerializer):
     client_name = serializers.CharField(source="client.full_name", read_only=True)
-    property_name = serializers.CharField(source="property.name", read_only=True)
+    apartment_name = serializers.SerializerMethodField()
 
     class Meta:
         model = Booking
@@ -196,8 +281,9 @@ class BookingListSerializer(serializers.ModelSerializer):
             "booking_code",
             "client",
             "client_name",
-            "property",
-            "property_name",
+            "apartment",
+            "apartment_name",
+            "yearly_rental",
             "check_in_date",
             "check_out_date",
             "rate_type",
@@ -207,10 +293,17 @@ class BookingListSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = fields
 
+    def get_apartment_name(self, obj):
+        if obj.apartment_id:
+            return obj.apartment.name
+        if obj.yearly_rental_id:
+            return obj.yearly_rental.name
+        return None
+
 
 class BookingDetailSerializer(serializers.ModelSerializer):
     client_name = serializers.CharField(source="client.full_name", read_only=True)
-    property_name = serializers.CharField(source="property.name", read_only=True)
+    apartment_name = serializers.SerializerMethodField()
     created_by_email = serializers.EmailField(
         source="created_by.email", read_only=True
     )
@@ -222,8 +315,10 @@ class BookingDetailSerializer(serializers.ModelSerializer):
             "booking_code",
             "client",
             "client_name",
-            "property",
-            "property_name",
+            "apartment",
+            "apartment_name",
+            "yearly_rental",
+            "nairabNb_reference",
             "check_in_date",
             "check_out_date",
             "rate_type",
@@ -257,13 +352,22 @@ class BookingDetailSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
 
+    def get_apartment_name(self, obj):
+        if obj.apartment_id:
+            return obj.apartment.name
+        if obj.yearly_rental_id:
+            return obj.yearly_rental.name
+        return None
+
 
 class BookingCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Booking
         fields = [
             "client",
-            "property",
+            "apartment",
+            "yearly_rental",
+            "nairabNb_reference",
             "check_in_date",
             "check_out_date",
             "rate_type",
@@ -278,6 +382,16 @@ class BookingCreateSerializer(serializers.ModelSerializer):
         if check_in and check_out and check_out <= check_in:
             raise serializers.ValidationError(
                 {"check_out_date": "Check-out date must be after check-in date."}
+            )
+        apartment = data.get("apartment")
+        yearly_rental = data.get("yearly_rental")
+        if not apartment and not yearly_rental:
+            raise serializers.ValidationError(
+                "Either apartment or yearly_rental must be provided."
+            )
+        if apartment and yearly_rental:
+            raise serializers.ValidationError(
+                "Only one of apartment or yearly_rental can be set."
             )
         return data
 
@@ -311,6 +425,7 @@ class CautionDepositSerializer(serializers.ModelSerializer):
             "refund_method",
             "account_number",
             "status",
+            "dispute_reason",
             "initiated_by",
             "processed_by",
             "created_at",
@@ -337,3 +452,136 @@ class CautionDepositUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = CautionDeposit
         fields = ["refund_method", "account_number"]
+
+
+class CautionDepositDisputeSerializer(serializers.Serializer):
+    dispute_reason = serializers.CharField()
+
+
+# ── Inventory ──────────────────────────────────────────────────────────────────
+
+
+class InventoryTemplateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = InventoryTemplate
+        fields = [
+            "id",
+            "apartment",
+            "yearly_rental",
+            "unit_type",
+            "item_name",
+            "category",
+            "quantity_expected",
+            "is_consumable",
+            "created_at",
+        ]
+        read_only_fields = ["id", "created_at"]
+
+
+class InventoryItemSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = InventoryItem
+        fields = [
+            "id",
+            "apartment",
+            "yearly_rental",
+            "item_name",
+            "category",
+            "quantity_total",
+            "quantity_good",
+            "note",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+
+class InventoryVerificationItemSerializer(serializers.ModelSerializer):
+    item_name = serializers.CharField(
+        source="inventory_item.item_name", read_only=True
+    )
+
+    class Meta:
+        model = InventoryVerificationItem
+        fields = [
+            "id",
+            "inventory_item",
+            "item_name",
+            "status",
+            "estimated_cost",
+            "notes",
+            "photo",
+        ]
+
+
+class InventoryVerificationSerializer(serializers.ModelSerializer):
+    items = InventoryVerificationItemSerializer(many=True, read_only=True)
+    created_by_email = serializers.EmailField(
+        source="created_by.email", read_only=True
+    )
+
+    class Meta:
+        model = InventoryVerification
+        fields = [
+            "id",
+            "booking",
+            "created_by",
+            "created_by_email",
+            "verified_at",
+            "cleaning_fee",
+            "additional_charges",
+            "notes",
+            "items",
+            "created_at",
+        ]
+        read_only_fields = ["id", "created_by", "created_by_email", "created_at"]
+
+
+class CompleteCheckoutSerializer(serializers.Serializer):
+    cleaning_fee = serializers.DecimalField(
+        max_digits=12, decimal_places=2, required=False, default=0
+    )
+    additional_charges = serializers.DecimalField(
+        max_digits=12, decimal_places=2, required=False, default=0
+    )
+    notes = serializers.CharField(required=False, allow_blank=True, default="")
+    items = serializers.ListField(
+        child=serializers.DictField(), required=False, default=list
+    )
+
+
+# ── NairaBnBBookingRequest ─────────────────────────────────────────────────────
+
+
+class NairaBnBBookingRequestSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = NairaBnBBookingRequest
+        fields = [
+            "id",
+            "nairabNb_reference",
+            "apartment",
+            "client_name",
+            "client_email",
+            "client_phone",
+            "check_in_date",
+            "check_out_date",
+            "num_guests",
+            "quoted_amount",
+            "status",
+            "expires_at",
+            "declined_reason",
+            "notes",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
+            "status",
+            "expires_at",
+            "created_at",
+            "updated_at",
+        ]
+
+
+class BookingRequestDeclineSerializer(serializers.Serializer):
+    declined_reason = serializers.CharField(required=False, allow_blank=True, default="")
