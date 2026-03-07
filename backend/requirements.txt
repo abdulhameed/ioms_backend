@@ -30,6 +30,7 @@ pydyf==0.8.0  # WeasyPrint 60.2 is incompatible with pydyf >= 0.9
 # API utilities
 django-cors-headers==4.3.1
 django-filter==23.5
+drf-spectacular==0.27.2
 
 # MFA / rate limiting
 django-ratelimit==4.1.0
