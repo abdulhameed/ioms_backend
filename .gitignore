@@ -42,6 +42,9 @@ coverage.xml
 *.cover
 .hypothesis/
 
+# Claude Code
+.claude/
+
 # Editors
 .idea/
 .vscode/
