@@ -76,9 +76,14 @@ See `.env.example` for the full list with descriptions.
 ## Testing
 
 ```bash
-make test                  # full suite with coverage
-make test-phase N=2        # Phase 2 tests only (AUTH-01 to AUTH-15)
-make test-phase N=3        # Phase 3 tests only (APR-01 to APR-10)
+make test                  # full suite with coverage (≥ 80% gate)
+make test-phase N=2        # Phase 2 — Auth & RBAC (AUTH-01 to AUTH-15)
+make test-phase N=3        # Phase 3 — Approvals (APR-01 to APR-10)
+make test-phase N=4        # Phase 4 — Projects (PROJ-01 to PROJ-15)
+make test-phase N=5        # Phase 5 — Shortlets (SHL-01 to SHL-13)
+make test-phase N=6        # Phase 6 — Maintenance (MNT-01 to MNT-12)
+make test-phase N=7        # Phase 7 — Notifications (NFY-01 to NFY-07)
+make test-phase N=8        # Phase 8 — Security hardening (SEC-01 to SEC-12)
 ```
 
 Tests require a running database. Use `make up` first.
@@ -121,8 +126,11 @@ ioms_backend/
     │   └── notifications/     # Notification API endpoints + Celery tasks
     └── tests/
         ├── conftest.py
-        ├── test_auth.py
-        ├── test_projects.py
-        ├── test_shortlets.py
-        └── test_maintenance.py
+        ├── test_auth.py          # Phase 2 — AUTH-01 to AUTH-15
+        ├── test_approvals.py     # Phase 3 — APR-01 to APR-10
+        ├── test_projects.py      # Phase 4 — PROJ-01 to PROJ-15
+        ├── test_shortlets.py     # Phase 5 — SHL-01 to SHL-13
+        ├── test_maintenance.py   # Phase 6 — MNT-01 to MNT-12
+        ├── test_notifications.py # Phase 7 — NFY-01 to NFY-07
+        └── test_security.py      # Phase 8 — SEC-01 to SEC-12
 ```

@@ -426,3 +426,621 @@ def test_audit_log_archive_removes_old_entries(admin_user):
     assert result >= 1
     assert not AuditLog.objects.filter(id=old_entry.id).exists()
     assert AuditLog.objects.filter(id=recent_entry.id).exists()
+
+
+# ── API layer edge cases ──────────────────────────────────────────────────────
+
+@pytest.mark.django_db
+def test_list_ordered_newest_first(api_client, user_a):
+    """Notifications returned newest-first (-created_at ordering)."""
+    n1 = _make_notification(user_a, ntype="system")
+    n2 = _make_notification(user_a, ntype="assignment")
+    # Force n1 to be older
+    Notification.objects.filter(id=n1.id).update(
+        created_at=timezone.now() - timedelta(minutes=5)
+    )
+    api_client.force_authenticate(user=user_a)
+    resp = api_client.get(NOTIFICATIONS_URL)
+    results = resp.data["results"]
+    assert str(results[0]["id"]) == str(n2.id)
+    assert str(results[1]["id"]) == str(n1.id)
+
+
+@pytest.mark.django_db
+def test_filter_is_read_true(api_client, user_a):
+    """GET /notifications/?is_read=true returns only already-read notifications."""
+    _make_notification(user_a, is_read=False)
+    _make_notification(user_a, is_read=True)
+
+    api_client.force_authenticate(user=user_a)
+    resp = api_client.get(f"{NOTIFICATIONS_URL}?is_read=true")
+    results = resp.data["results"]
+    assert len(results) == 1
+    assert results[0]["is_read"] is True
+
+
+@pytest.mark.django_db
+def test_combined_filter_type_and_is_read(api_client, user_a):
+    """?type=sla_warning&is_read=false returns only unread sla_warning notifications."""
+    _make_notification(user_a, ntype="sla_warning", is_read=False)
+    _make_notification(user_a, ntype="sla_warning", is_read=True)
+    _make_notification(user_a, ntype="system", is_read=False)
+
+    api_client.force_authenticate(user=user_a)
+    resp = api_client.get(f"{NOTIFICATIONS_URL}?type=sla_warning&is_read=false")
+    results = resp.data["results"]
+    assert len(results) == 1
+    assert results[0]["notification_type"] == "sla_warning"
+    assert results[0]["is_read"] is False
+
+
+@pytest.mark.django_db
+def test_filter_unknown_type_returns_empty(api_client, user_a):
+    """?type=nonexistent returns empty list, no error."""
+    _make_notification(user_a, ntype="system")
+
+    api_client.force_authenticate(user=user_a)
+    resp = api_client.get(f"{NOTIFICATIONS_URL}?type=nonexistent_type")
+    assert resp.status_code == 200
+    assert resp.data["results"] == []
+    assert resp.data["count"] == 0
+
+
+@pytest.mark.django_db
+def test_mark_read_does_not_update_read_at_on_second_call(api_client, user_a):
+    """read_at timestamp is frozen after first mark-read; second call leaves it unchanged."""
+    n = _make_notification(user_a)
+
+    api_client.force_authenticate(user=user_a)
+    resp1 = api_client.post(f"{NOTIFICATIONS_URL}{n.id}/read/")
+    first_read_at = resp1.data["read_at"]
+
+    resp2 = api_client.post(f"{NOTIFICATIONS_URL}{n.id}/read/")
+    assert resp2.data["read_at"] == first_read_at
+
+
+@pytest.mark.django_db
+def test_read_all_when_all_already_read(api_client, user_a):
+    """read-all on already-read notifications returns marked_read=0."""
+    _make_notification(user_a, is_read=True)
+    _make_notification(user_a, is_read=True)
+
+    api_client.force_authenticate(user=user_a)
+    resp = api_client.post(READ_ALL_URL)
+    assert resp.status_code == 200
+    assert resp.data["marked_read"] == 0
+
+
+@pytest.mark.django_db
+def test_read_all_sets_read_at_on_all_affected(api_client, user_a):
+    """read-all sets read_at on every previously-unread notification."""
+    n1 = _make_notification(user_a)
+    n2 = _make_notification(user_a)
+
+    api_client.force_authenticate(user=user_a)
+    api_client.post(READ_ALL_URL)
+
+    n1.refresh_from_db()
+    n2.refresh_from_db()
+    assert n1.read_at is not None
+    assert n2.read_at is not None
+
+
+@pytest.mark.django_db
+def test_mark_read_nonexistent_uuid(api_client, user_a):
+    """POST /notifications/{random-uuid}/read/ → 404."""
+    import uuid
+
+    api_client.force_authenticate(user=user_a)
+    resp = api_client.post(f"{NOTIFICATIONS_URL}{uuid.uuid4()}/read/")
+    assert resp.status_code == 404
+
+
+@pytest.mark.django_db
+def test_unread_count_unauthenticated(api_client):
+    """Unauthenticated unread-count → 401."""
+    resp = api_client.get(UNREAD_COUNT_URL)
+    assert resp.status_code == 401
+
+
+@pytest.mark.django_db
+def test_read_all_unauthenticated(api_client):
+    """Unauthenticated read-all → 401."""
+    resp = api_client.post(READ_ALL_URL)
+    assert resp.status_code == 401
+
+
+@pytest.mark.django_db
+def test_mark_read_unauthenticated(api_client, user_a):
+    """Unauthenticated mark-read → 401."""
+    n = _make_notification(user_a)
+    resp = api_client.post(f"{NOTIFICATIONS_URL}{n.id}/read/")
+    assert resp.status_code == 401
+
+
+@pytest.mark.django_db
+def test_list_pagination_second_page(api_client, user_a):
+    """Page 2 returns the correct slice of notifications."""
+    for i in range(25):
+        _make_notification(user_a, ntype="system")
+
+    api_client.force_authenticate(user=user_a)
+    page2 = api_client.get(f"{NOTIFICATIONS_URL}?page=2")
+    assert page2.status_code == 200
+    assert len(page2.data["results"]) == 5  # 25 total, page_size=20
+    assert page2.data["count"] == 25
+
+
+# ── send_approval_notification event type tests ───────────────────────────────
+
+@pytest.mark.django_db
+def test_submitted_event_creates_approval_pending_type(django_user_model):
+    """submitted event creates notification_type=approval_pending."""
+    from apps.approvals.models import ApprovalWorkflow
+    from apps.approvals.tasks import send_approval_notification
+
+    initiator = _make_user(django_user_model, "pm", "full", "init_sub@nfy.test")
+    l1 = _make_user(django_user_model, "hr", "full", "l1_sub@nfy.test")
+
+    workflow = ApprovalWorkflow.objects.create(
+        workflow_type="project_proposal",
+        initiated_by=initiator,
+        l1_approver=l1,
+        requires_l2=False,
+        status="pending_l1",
+    )
+
+    with patch("django.core.mail.send_mail"):
+        send_approval_notification(str(workflow.id), "submitted")
+
+    assert Notification.objects.filter(
+        notification_type="approval_pending",
+        resource_id=workflow.id,
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_l1_rejected_event_creates_approval_decided_type(django_user_model):
+    """l1_rejected event creates notification_type=approval_decided."""
+    from apps.approvals.models import ApprovalWorkflow
+    from apps.approvals.tasks import send_approval_notification
+
+    initiator = _make_user(django_user_model, "pm", "full", "init_rej@nfy.test")
+    l1 = _make_user(django_user_model, "hr", "full", "l1_rej@nfy.test")
+
+    workflow = ApprovalWorkflow.objects.create(
+        workflow_type="project_proposal",
+        initiated_by=initiator,
+        l1_approver=l1,
+        requires_l2=False,
+        status="draft",
+        l1_decision="rejected",
+    )
+
+    with patch("django.core.mail.send_mail"):
+        send_approval_notification(str(workflow.id), "l1_rejected")
+
+    assert Notification.objects.filter(
+        notification_type="approval_decided",
+        resource_id=workflow.id,
+        recipient=initiator,
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_more_info_event_creates_approval_pending_type(django_user_model):
+    """more_info event uses approval_pending (not decided)."""
+    from apps.approvals.models import ApprovalWorkflow
+    from apps.approvals.tasks import send_approval_notification
+
+    initiator = _make_user(django_user_model, "pm", "full", "init_mi@nfy.test")
+    l1 = _make_user(django_user_model, "hr", "full", "l1_mi@nfy.test")
+
+    workflow = ApprovalWorkflow.objects.create(
+        workflow_type="project_proposal",
+        initiated_by=initiator,
+        l1_approver=l1,
+        requires_l2=False,
+        status="pending_l1",
+    )
+
+    with patch("django.core.mail.send_mail"):
+        send_approval_notification(str(workflow.id), "more_info")
+
+    assert Notification.objects.filter(
+        notification_type="approval_pending",
+        resource_id=workflow.id,
+        recipient=initiator,
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_withdrawn_event_creates_approval_decided_type(django_user_model):
+    """withdrawn event creates notification_type=approval_decided for the pending approver."""
+    from apps.approvals.models import ApprovalWorkflow
+    from apps.approvals.tasks import send_approval_notification
+
+    initiator = _make_user(django_user_model, "pm", "full", "init_wd@nfy.test")
+    l1 = _make_user(django_user_model, "hr", "full", "l1_wd@nfy.test")
+
+    workflow = ApprovalWorkflow.objects.create(
+        workflow_type="project_proposal",
+        initiated_by=initiator,
+        l1_approver=l1,
+        requires_l2=False,
+        status="withdrawn",
+    )
+
+    with patch("django.core.mail.send_mail"):
+        send_approval_notification(str(workflow.id), "withdrawn")
+
+    assert Notification.objects.filter(
+        notification_type="approval_decided",
+        resource_id=workflow.id,
+        recipient=l1,
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_send_notification_nonexistent_workflow():
+    """send_approval_notification with a nonexistent UUID returns gracefully (no crash)."""
+    from apps.approvals.tasks import send_approval_notification
+
+    result = send_approval_notification(str(uuid.uuid4()), "approved")
+    assert result is None  # early return, no exception
+
+
+# ── booking_checkin_reminder task edge cases ──────────────────────────────────
+
+@pytest.mark.django_db
+def test_booking_checkin_reminder_with_bookings(django_user_model):
+    """booking_checkin_reminder creates a notification for each front_desk user."""
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    from apps.notifications.tasks import booking_checkin_reminder
+    from apps.shortlets.models import Booking, Client, ShortletProperty
+    from apps.shortlets.services import generate_booking_code, generate_client_code, generate_property_code
+
+    fd_user = _make_user(django_user_model, "front_desk", email="fd_test@nfy.test")
+
+    prop = ShortletProperty.objects.create(
+        name="Test Property",
+        unit_type="studio",
+        location="Lagos",
+        rate_nightly="30000.00",
+        caution_deposit_amount="10000.00",
+        status="available",
+        property_code=generate_property_code(),
+    )
+    client = Client.objects.create(
+        full_name="Test Guest",
+        phone="08055550001",
+        email="guest_test@nfy.test",
+        client_type="individual",
+        id_type="nin",
+        id_number="11122233344",
+        created_by=fd_user,
+        client_code=generate_client_code(),
+    )
+    tomorrow = (timezone.now() + timedelta(days=1)).date()
+    Booking.objects.create(
+        booking_code=generate_booking_code(),
+        client=client,
+        property=prop,
+        check_in_date=tomorrow,
+        check_out_date=tomorrow + timedelta(days=2),
+        rate_type="nightly",
+        num_guests=1,
+        base_amount="60000.00",
+        caution_deposit_amount="10000.00",
+        total_amount="70000.00",
+        status="confirmed",
+        created_by=fd_user,
+    )
+
+    count = booking_checkin_reminder()
+    assert count == 1
+    assert Notification.objects.filter(
+        recipient=fd_user,
+        notification_type="booking_reminder",
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_booking_checkin_reminder_excludes_checked_in_bookings(django_user_model):
+    """checked_in bookings are not included in the reminder (status != confirmed)."""
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    from apps.notifications.tasks import booking_checkin_reminder
+    from apps.shortlets.models import Booking, Client, ShortletProperty
+    from apps.shortlets.services import generate_booking_code, generate_client_code, generate_property_code
+
+    fd_user = _make_user(django_user_model, "front_desk", email="fd_excl@nfy.test")
+
+    prop = ShortletProperty.objects.create(
+        name="Excluded Property",
+        unit_type="studio",
+        location="Lagos",
+        rate_nightly="25000.00",
+        caution_deposit_amount="10000.00",
+        status="occupied",
+        property_code=generate_property_code(),
+    )
+    client = Client.objects.create(
+        full_name="Early Guest",
+        phone="08055550002",
+        email="early@nfy.test",
+        client_type="individual",
+        id_type="nin",
+        id_number="22233344455",
+        created_by=fd_user,
+        client_code=generate_client_code(),
+    )
+    tomorrow = (timezone.now() + timedelta(days=1)).date()
+    Booking.objects.create(
+        booking_code=generate_booking_code(),
+        client=client,
+        property=prop,
+        check_in_date=tomorrow,
+        check_out_date=tomorrow + timedelta(days=3),
+        rate_type="nightly",
+        num_guests=1,
+        base_amount="75000.00",
+        caution_deposit_amount="10000.00",
+        total_amount="85000.00",
+        status="checked_in",   # Already checked in — should NOT trigger reminder
+        created_by=fd_user,
+    )
+
+    count = booking_checkin_reminder()
+    assert count == 0  # No confirmed bookings → no notification
+
+
+@pytest.mark.django_db
+def test_booking_checkin_reminder_no_front_desk_users(django_user_model):
+    """Confirmed bookings exist but no front_desk users → returns 0."""
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    from apps.notifications.tasks import booking_checkin_reminder
+    from apps.shortlets.models import Booking, Client, ShortletProperty
+    from apps.shortlets.services import generate_booking_code, generate_client_code, generate_property_code
+
+    admin_creator = _make_user(django_user_model, "admin", "full", "admin_nofd@nfy.test")
+
+    prop = ShortletProperty.objects.create(
+        name="No FD Property",
+        unit_type="apartment",
+        location="Abuja",
+        rate_nightly="40000.00",
+        caution_deposit_amount="20000.00",
+        status="available",
+        property_code=generate_property_code(),
+    )
+    client = Client.objects.create(
+        full_name="Lonely Guest",
+        phone="08055550003",
+        email="lonely@nfy.test",
+        client_type="individual",
+        id_type="nin",
+        id_number="33344455566",
+        created_by=admin_creator,
+        client_code=generate_client_code(),
+    )
+    tomorrow = (timezone.now() + timedelta(days=1)).date()
+    Booking.objects.create(
+        booking_code=generate_booking_code(),
+        client=client,
+        property=prop,
+        check_in_date=tomorrow,
+        check_out_date=tomorrow + timedelta(days=1),
+        rate_type="nightly",
+        num_guests=1,
+        base_amount="40000.00",
+        caution_deposit_amount="20000.00",
+        total_amount="60000.00",
+        status="confirmed",
+        created_by=admin_creator,
+    )
+
+    # No front_desk users in DB → task runs but creates 0 notifications
+    count = booking_checkin_reminder()
+    assert count == 0
+
+
+# ── project_deadline_alert task edge cases ────────────────────────────────────
+
+@pytest.mark.django_db
+def test_project_deadline_alert_with_due_project(django_user_model):
+    """project_deadline_alert creates notification for PM + MD when project is due in 3 days."""
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    from apps.notifications.tasks import project_deadline_alert
+    from apps.projects.models import Project
+
+    pm = _make_user(django_user_model, "pm", "full", "pm_due@nfy.test")
+    md = _make_user(django_user_model, "md", "full", "md_due@nfy.test")
+
+    due_date = (timezone.now() + timedelta(days=3)).date()
+    project = Project.objects.create(
+        name="Deadline Project",
+        project_type="commercial",
+        location_text="Lagos",
+        start_date="2026-01-01",
+        expected_end_date=due_date,
+        budget_total="500000.00",
+        scope="Test",
+        project_manager=pm,
+        created_by=pm,
+        status="in_progress",
+    )
+
+    count = project_deadline_alert()
+    assert count >= 2  # PM + MD
+
+    assert Notification.objects.filter(
+        notification_type="system",
+        resource_type="Project",
+        resource_id=project.id,
+        recipient=pm,
+    ).exists()
+    assert Notification.objects.filter(
+        notification_type="system",
+        resource_type="Project",
+        resource_id=project.id,
+        recipient=md,
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_project_deadline_alert_excludes_far_future(django_user_model):
+    """project_deadline_alert ignores projects due more than 7 days away."""
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    from apps.notifications.tasks import project_deadline_alert
+    from apps.projects.models import Project
+
+    pm = _make_user(django_user_model, "pm", "full", "pm_far@nfy.test")
+
+    far_date = (timezone.now() + timedelta(days=30)).date()
+    Project.objects.create(
+        name="Far Future Project",
+        project_type="commercial",
+        location_text="Abuja",
+        start_date="2026-01-01",
+        expected_end_date=far_date,
+        budget_total="500000.00",
+        scope="Test",
+        project_manager=pm,
+        created_by=pm,
+        status="in_progress",
+    )
+
+    count = project_deadline_alert()
+    assert count == 0
+
+
+@pytest.mark.django_db
+def test_project_deadline_alert_excludes_draft_projects(django_user_model):
+    """project_deadline_alert ignores draft projects (not yet approved/active)."""
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    from apps.notifications.tasks import project_deadline_alert
+    from apps.projects.models import Project
+
+    pm = _make_user(django_user_model, "pm", "full", "pm_draft@nfy.test")
+
+    due_date = (timezone.now() + timedelta(days=2)).date()
+    Project.objects.create(
+        name="Draft Deadline Project",
+        project_type="residential",
+        location_text="Kano",
+        start_date="2026-01-01",
+        expected_end_date=due_date,
+        budget_total="200000.00",
+        scope="Test",
+        project_manager=pm,
+        created_by=pm,
+        status="draft",  # NOT active — should be excluded
+    )
+
+    count = project_deadline_alert()
+    assert count == 0
+
+
+@pytest.mark.django_db
+def test_project_deadline_alert_excludes_overdue(django_user_model):
+    """project_deadline_alert ignores projects whose deadline has already passed."""
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    from apps.notifications.tasks import project_deadline_alert
+    from apps.projects.models import Project
+
+    pm = _make_user(django_user_model, "pm", "full", "pm_over@nfy.test")
+
+    past_date = (timezone.now() - timedelta(days=1)).date()
+    Project.objects.create(
+        name="Overdue Project",
+        project_type="commercial",
+        location_text="Lagos",
+        start_date="2025-01-01",
+        expected_end_date=past_date,
+        budget_total="500000.00",
+        scope="Test",
+        project_manager=pm,
+        created_by=pm,
+        status="in_progress",
+    )
+
+    count = project_deadline_alert()
+    assert count == 0
+
+
+# ── audit_log_archive edge cases ──────────────────────────────────────────────
+
+@pytest.mark.django_db
+def test_audit_log_archive_no_old_entries_returns_zero(admin_user):
+    """audit_log_archive returns 0 when no entries are older than 7 years."""
+    from apps.users.tasks import audit_log_archive
+
+    # All existing logs are recent — nothing to archive
+    result = audit_log_archive()
+    assert result == 0
+
+
+# ── dashboard_cache_refresh accuracy ─────────────────────────────────────────
+
+@pytest.mark.django_db
+def test_dashboard_cache_refresh_accurate_counts(django_user_model):
+    """dashboard_cache_refresh stores accurate by_status counts."""
+    from django.core.cache import cache
+
+    from apps.projects.models import Project
+    from apps.projects.tasks import dashboard_cache_refresh
+
+    pm = _make_user(django_user_model, "pm", "full", "pm_cache@nfy.test")
+    Project.objects.create(
+        name="Cache Test Draft",
+        project_type="commercial",
+        location_text="Lagos",
+        start_date="2026-01-01",
+        expected_end_date="2026-12-31",
+        budget_total="100000.00",
+        scope="Test",
+        project_manager=pm,
+        created_by=pm,
+        status="draft",
+    )
+    Project.objects.create(
+        name="Cache Test Active",
+        project_type="residential",
+        location_text="Abuja",
+        start_date="2026-01-01",
+        expected_end_date="2026-12-31",
+        budget_total="200000.00",
+        scope="Test",
+        project_manager=pm,
+        created_by=pm,
+        status="in_progress",
+    )
+
+    cache.delete("projects_dashboard")
+    dashboard_cache_refresh()
+    data = cache.get("projects_dashboard")
+
+    assert data["by_status"]["draft"] >= 1
+    assert data["by_status"]["in_progress"] >= 1
+    assert data["total"] >= 2

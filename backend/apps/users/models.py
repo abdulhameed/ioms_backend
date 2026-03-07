@@ -200,6 +200,11 @@ class AuditLog(models.Model):
     def __str__(self):
         return f"{self.action} by {self.user_id} at {self.timestamp}"
 
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            raise ValueError("AuditLog entries are immutable and cannot be updated.")
+        super().save(*args, **kwargs)
+
     @classmethod
     def log(
         cls,
