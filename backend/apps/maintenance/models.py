@@ -60,7 +60,7 @@ class MaintenanceRequest(models.Model):
     issue_type = models.CharField(max_length=20, choices=ISSUE_TYPE_CHOICES)
     location_type = models.CharField(max_length=20, choices=LOCATION_TYPE_CHOICES)
     property = models.ForeignKey(
-        "shortlets.ShortletProperty",
+        "shortlets.ShortletApartment",
         null=True,
         blank=True,
         on_delete=models.SET_NULL,
