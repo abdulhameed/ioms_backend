@@ -8,17 +8,31 @@
 
 ---
 
+## Interactive API Docs (Swagger / ReDoc)
+
+The live OpenAPI 3 schema is auto-generated from the codebase and available at:
+
+| URL | Description |
+|---|---|
+| `http://localhost:8000/api/schema/` | Raw OpenAPI 3 YAML download |
+| `http://localhost:8000/api/schema/swagger-ui/` | Swagger UI — interactive, try-it-out |
+| `http://localhost:8000/api/schema/redoc/` | ReDoc — clean readable reference |
+
+> The Swagger UI supports **Authorize** — paste your `Bearer <access_token>` there to authenticate all requests directly from the browser.
+
+---
+
 ## Phase Status
 
 | Phase | Status | Endpoints |
 |---|---|---|
 | Phase 1 — Infrastructure | ✅ Complete | `/`, `/health/` |
 | Phase 2 — Auth & RBAC | ✅ Complete | `/auth/**`, `/users/**`, `/audit-logs/**` |
-| Phase 3 — Approvals | ⏳ Pending | `/approvals/**` |
-| Phase 4 — Projects | ⏳ Pending | `/projects/**` |
-| Phase 5 — Shortlets | ⏳ Pending | `/properties/**`, `/clients/**`, `/bookings/**`, `/deposits/**` |
-| Phase 6 — Maintenance | ⏳ Pending | `/maintenance/**` |
-| Phase 7 — Notifications API | ⏳ Pending | `/notifications/**` |
+| Phase 3 — Approvals | ✅ Complete | `/approvals/**` |
+| Phase 4 — Projects | ✅ Complete | `/projects/**` |
+| Phase 5 — Shortlets | ✅ Complete | `/properties/**`, `/clients/**`, `/bookings/**`, `/deposits/**` |
+| Phase 6 — Maintenance | ✅ Complete | `/maintenance/**` |
+| Phase 7 — Notifications API | ✅ Complete | `/notifications/**` |
 
 ---
 
