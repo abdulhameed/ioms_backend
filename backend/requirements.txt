@@ -25,6 +25,7 @@ Pillow==10.2.0
 
 # PDF generation
 WeasyPrint==60.2
+pydyf==0.8.0  # WeasyPrint 60.2 is incompatible with pydyf >= 0.9
 
 # API utilities
 django-cors-headers==4.3.1

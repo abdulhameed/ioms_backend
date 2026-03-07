@@ -9,8 +9,7 @@ urlpatterns = [
     # Phase 3+
     path('api/v1/', include('apps.approvals.urls')),
     path('api/v1/', include('apps.projects.urls')),
-    # path('api/v1/', include('apps.shortlets.urls')),
-    # path('api/v1/', include('apps.projects.urls')),
+    path('api/v1/', include('apps.shortlets.urls')),
     # path('api/v1/', include('apps.shortlets.urls')),
     # path('api/v1/', include('apps.maintenance.urls')),
     # path('api/v1/', include('apps.notifications.urls')),

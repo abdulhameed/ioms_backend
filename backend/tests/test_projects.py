@@ -459,7 +459,7 @@ def test_proj_15_pm_limited_permissions(
     resp2 = api_client.post(
         f"/api/v1/projects/{draft_project.id}/site-reports/",
         {
-            "report_date": "2026-04-01",
+            "report_date": "2026-03-01",
             "report_type": "daily",
             "task_description": "Daily inspection",
             "progress_summary": "All work on schedule.",
