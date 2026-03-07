@@ -33,7 +33,7 @@ def booking_checkin_reminder():
     bookings = Booking.objects.filter(
         check_in_date=tomorrow,
         status="confirmed",
-    ).select_related("client", "property")
+    ).select_related("client", "apartment", "yearly_rental")
 
     if not bookings.exists():
         logger.info("booking_checkin_reminder: no check-ins tomorrow (%s)", tomorrow)
