@@ -493,13 +493,13 @@ def test_shl_14_nairabNb_webhook_hmac(api_client, shortlet_property, settings):
     }
     body = json.dumps(payload).encode()
 
-    # Valid signature
+    # Valid signature (header name: X-NBNB-Signature → META: HTTP_X_NBNB_SIGNATURE)
     sig = hmac.new(b"testsecret", body, hashlib.sha256).hexdigest()
     resp = api_client.post(
         WEBHOOK_URL,
         data=body,
         content_type="application/json",
-        HTTP_X_NAIRABND_SIGNATURE=sig,
+        HTTP_X_NBNB_SIGNATURE=sig,
     )
     assert resp.status_code == 201, resp.data
     assert NairaBnBBookingRequest.objects.filter(
@@ -511,7 +511,7 @@ def test_shl_14_nairabNb_webhook_hmac(api_client, shortlet_property, settings):
         WEBHOOK_URL,
         data=body,
         content_type="application/json",
-        HTTP_X_NAIRABND_SIGNATURE="invalidsig",
+        HTTP_X_NBNB_SIGNATURE="invalidsig",
     )
     assert resp2.status_code == 403
 

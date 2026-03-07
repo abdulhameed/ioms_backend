@@ -65,9 +65,12 @@ def generate_receipt_number():
 def validate_nairabNb_signature(request):
     """Validate HMAC-SHA256 signature from NairaBnB webhook request."""
     secret = (settings.NAIRABND_WEBHOOK_SECRET or "").encode()
-    sig = request.headers.get("X-NairaBnB-Signature", "")
+    # Read from META directly to avoid Django header name normalisation quirks.
+    # The raw header sent by NairaBnB clients should be X-NBNB-Signature;
+    # Django maps it to HTTP_X_NBNB_SIGNATURE in META.
+    sig = request.META.get("HTTP_X_NBNB_SIGNATURE", "")
     expected = hmac.new(secret, request.body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(sig, expected)
+    return bool(sig) and hmac.compare_digest(sig, expected)
 
 
 class ClientService:
@@ -152,7 +155,17 @@ class BookingService:
                 prop = yearly_rental
                 caution = yearly_rental.deposit_amount
 
-            base_amount = Booking.calculate_base_amount(prop, check_in, check_out, rate_type)
+            if apartment:
+                base_amount = Booking.calculate_base_amount(prop, check_in, check_out, rate_type)
+            else:
+                # Yearly rental: derive monthly rate from rate_yearly
+                import datetime as _dt
+                ci = _dt.date.fromisoformat(check_in) if isinstance(check_in, str) else check_in
+                co = _dt.date.fromisoformat(check_out) if isinstance(check_out, str) else check_out
+                days = (co - ci).days
+                months = max(1, round(days / 30))
+                monthly_rate = prop.rate_yearly / 12
+                base_amount = monthly_rate * Decimal(str(months))
             total = base_amount + caution
             booking_code = generate_booking_code()
 
