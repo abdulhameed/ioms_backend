@@ -58,16 +58,23 @@ make seed-admin
 
 This creates `admin@example.com` / `AdminPass123!` with `role=md` and full system access. The command is idempotent — it skips silently if the user already exists.
 
-To use different credentials or create an `hr_full` user instead:
+> **Important:** The `create_admin_user` management command only supports `--role md` or `--role hr_full`. Both of these roles **require MFA to be configured before login**. To get a usable token for testing without MFA, use Django shell:
 
 ```bash
-docker-compose exec backend python manage.py create_admin_user \
-  --email boss@example.com --password Secret99! --role hr_full
+docker-compose exec backend python manage.py shell -c "
+from rest_framework_simplejwt.tokens import RefreshToken
+from apps.users.models import CustomUser
+u = CustomUser.objects.get(email='admin@example.com')
+refresh = RefreshToken.for_user(u)
+print(str(refresh.access_token))
+"
 ```
 
-**Note:** MFA defaults to `False`, so login returns a full JWT immediately without an MFA challenge.
+Alternatively, register a user with a non-MFA role (e.g. `pm`, `admin`) via the API after obtaining an initial token above, then log in normally with that user.
 
 ### Step 3 — Login to get a token
+
+> **Note:** Roles `md` and `hr_full` require MFA to be set up via `POST /auth/mfa/setup/` before the standard login flow returns a full JWT. All other roles log in without MFA.
 
 ```http
 POST /api/v1/auth/login/
@@ -94,9 +101,10 @@ GET /api/v1/ HTTP/1.1
 **Expected response (200):**
 ```json
 {
-  "api": "IOMS",
+  "api": "IOMS Backend API",
   "version": "v1",
-  "status": "operational"
+  "status": "operational",
+  "docs": "/api/v1/schema/"
 }
 ```
 
@@ -123,9 +131,12 @@ GET /api/v1/health/ HTTP/1.1
 
 ### POST /api/v1/auth/register/
 
-> **Auth required:** Login first (`POST /auth/login/`) as an `hr_full` or `md` user to get a token, then pass it in the `Authorization` header. This endpoint is not public.
+> **Auth required:** Login first (`POST /auth/login/`) as an `hr` (full) or `md` user to get a token, then pass it in the `Authorization` header. This endpoint is not public.
 
 Creates an inactive user and queues a verification email.
+
+**Role values:** `md` | `hr` | `finance` | `admin` | `pm` | `front_desk` | `social_media` | `content_creator`
+**Permission level values:** `full` | `limited`
 
 ```http
 POST /api/v1/auth/register/ HTTP/1.1
@@ -136,7 +147,7 @@ Content-Type: application/json
   "email": "jane.doe@example.com",
   "full_name": "Jane Doe",
   "phone": "+2348012345678",
-  "role": "pm_full",
+  "role": "pm",
   "department": "Projects",
   "permission_level": "limited"
 }
@@ -149,10 +160,15 @@ Content-Type: application/json
   "email": "jane.doe@example.com",
   "full_name": "Jane Doe",
   "phone": "+2348012345678",
-  "role": "pm_full",
+  "username": "jane.doe",
+  "role": "pm",
   "department": "Projects",
   "permission_level": "limited",
-  "is_active": false
+  "is_active": false,
+  "mfa_enabled": false,
+  "last_login_ip": null,
+  "date_joined": "2026-03-05T14:30:00Z",
+  "created_by": "880e8400-e29b-41d4-a716-446655440001"
 }
 ```
 
@@ -229,6 +245,8 @@ Content-Type: application/json
 
 Returns a JWT access + refresh pair. Writes an AuditLog entry.
 
+> **Note:** Roles `md` and `hr_full` return `{"error": "mfa_required", "message": "MFA must be configured before login for this role."}` until MFA is set up via `POST /auth/mfa/setup/`.
+
 ```http
 POST /api/v1/auth/login/ HTTP/1.1
 Content-Type: application/json
@@ -246,8 +264,6 @@ Content-Type: application/json
   "refresh": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 }
 ```
-
-> If MFA is required for the role (`md`, `hr_full`), a partial token is returned and MFA verification must be completed before the full JWT is issued.
 
 **Error — invalid credentials (401):**
 ```json
@@ -312,7 +328,7 @@ Content-Type: application/json
 
 ### POST /api/v1/auth/mfa/setup/
 
-Returns TOTP provisioning URI for authenticator app setup.
+Returns TOTP provisioning URI for authenticator app setup. Required for `md` and `hr_full` roles before they can log in.
 
 ```http
 POST /api/v1/auth/mfa/setup/ HTTP/1.1
@@ -362,10 +378,10 @@ Content-Type: application/json
 
 ### GET /api/v1/users/
 
-Requires `can_manage_users`. Supports filtering by `role`, `department`, `is_active`.
+Requires `can_manage_users`. Supports filtering by `role`, `department`, `is_active`. Paginated.
 
 ```http
-GET /api/v1/users/?role=pm_full&is_active=true HTTP/1.1
+GET /api/v1/users/?role=pm&is_active=true HTTP/1.1
 Authorization: Bearer <access_token>
 ```
 
@@ -381,7 +397,7 @@ Authorization: Bearer <access_token>
       "email": "jane.doe@example.com",
       "full_name": "Jane Doe",
       "phone": "+2348012345678",
-      "role": "pm_full",
+      "role": "pm",
       "department": "Projects",
       "permission_level": "limited",
       "is_active": true,
@@ -410,8 +426,8 @@ Authorization: Bearer <access_token>
   "email": "jane.doe@example.com",
   "full_name": "Jane Doe",
   "phone": "+2348012345678",
-  "username": "jane.doe@example.com",
-  "role": "pm_full",
+  "username": "jane.doe",
+  "role": "pm",
   "department": "Projects",
   "permission_level": "limited",
   "is_active": true,
@@ -464,7 +480,7 @@ Authorization: Bearer <access_token>
 Content-Type: application/json
 
 {
-  "role": "hr_limited",
+  "role": "hr",
   "department": "Human Resources",
   "permission_level": "limited",
   "is_active": true
@@ -487,7 +503,12 @@ Authorization: Bearer <access_token>
 **Expected response (200):**
 ```json
 {
-  "groups": ["pm_full"],
+  "group_permissions": [
+    {
+      "codename": "can_approve_requisition",
+      "name": "Can approve requisition"
+    }
+  ],
   "individual_grants": [
     {
       "codename": "can_approve_requisition",
@@ -573,18 +594,20 @@ Authorization: Bearer <access_token>
       "id": "660e8400-e29b-41d4-a716-446655440000",
       "user": "550e8400-e29b-41d4-a716-446655440000",
       "user_email": "jane.doe@example.com",
-      "role_snapshot": "pm_full",
+      "role_snapshot": "pm_limited",
       "action": "auth.login",
-      "resource_type": "user",
+      "resource_type": "CustomUser",
       "resource_id": "550e8400-e29b-41d4-a716-446655440000",
-      "description": "User logged in",
-      "metadata": {"ip": "192.168.1.1", "device": "Mozilla/5.0", "success": true},
+      "description": "Successful login",
+      "metadata": {"ip": "192.168.1.1", "device": "Mozilla/5.0"},
       "ip_address": "192.168.1.1",
       "timestamp": "2026-03-05T14:30:00Z"
     }
   ]
 }
 ```
+
+> `role_snapshot` is stored as `{role}_{permission_level}`, e.g. `pm_limited`, `hr_full`, `md`.
 
 ---
 
@@ -603,11 +626,9 @@ Authorization: Bearer <access_token>
 
 ## Phase 3 — Approval Workflow Engine
 
-> **Status: Pending** — endpoints available after Phase 3 implementation.
-
 ### GET /api/v1/approvals/
 
-Lists pending approvals and approvals created by the current user. Filterable by `status`, `workflow_type`.
+Lists pending approvals and approvals created by the current user. Filterable by `status`, `workflow_type`. Paginated.
 
 ```http
 GET /api/v1/approvals/?status=pending_l1 HTTP/1.1
@@ -738,8 +759,6 @@ Authorization: Bearer <access_token>
 
 ## Phase 4 — Projects & Site Management
 
-> **Status: Pending** — endpoints available after Phase 4 implementation.
-
 ### POST /api/v1/projects/
 
 Creates a project in `draft` status. `project_code` is null until L2 approval.
@@ -768,9 +787,61 @@ Content-Type: application/json
   "id": "990e8400-e29b-41d4-a716-446655440000",
   "project_code": null,
   "name": "Lekki Phase 2 Development",
+  "project_type": "residential",
+  "location_text": "Lekki, Lagos",
+  "lat": "6.428100",
+  "lng": "3.421900",
+  "start_date": "2026-04-01",
+  "expected_end_date": "2027-06-30",
+  "budget_total": "85000000.00",
+  "scope": "Construction of 20 housing units including roads and utilities.",
   "status": "draft",
   "health": "not_started",
-  "progress_pct": 0
+  "progress_pct": "0.00",
+  "progress_manual_override": false,
+  "project_manager": null,
+  "project_manager_email": null,
+  "created_by": "329469fa-e76d-4d7e-8d10-f551dc13df45",
+  "created_by_email": "admin@example.com",
+  "milestone_count": 0,
+  "document_count": 0,
+  "created_at": "2026-03-05T14:30:00Z",
+  "updated_at": "2026-03-05T14:30:00Z"
+}
+```
+
+---
+
+### GET /api/v1/projects/
+
+Returns paginated project list. Filterable by `status`, `project_type`, `health`.
+
+```http
+GET /api/v1/projects/ HTTP/1.1
+Authorization: Bearer <access_token>
+```
+
+**Expected response (200):**
+```json
+{
+  "count": 1,
+  "results": [
+    {
+      "id": "990e8400-e29b-41d4-a716-446655440000",
+      "project_code": null,
+      "name": "Lekki Phase 2 Development",
+      "project_type": "residential",
+      "status": "draft",
+      "health": "not_started",
+      "progress_pct": "0.00",
+      "project_manager": null,
+      "project_manager_email": null,
+      "start_date": "2026-04-01",
+      "expected_end_date": "2027-06-30",
+      "budget_total": "85000000.00",
+      "created_at": "2026-03-05T14:30:00Z"
+    }
+  ]
 }
 ```
 
@@ -778,26 +849,43 @@ Content-Type: application/json
 
 ### POST /api/v1/projects/{id}/submit/
 
-Submits draft project for approval. Creates an `ApprovalWorkflow`.
+Submits draft project for approval. Creates an `ApprovalWorkflow`. Returns the updated full project object.
 
 ```http
 POST /api/v1/projects/990e8400-e29b-41d4-a716-446655440000/submit/ HTTP/1.1
 Authorization: Bearer <access_token>
 ```
 
-**Expected response (200):**
-```json
-{
-  "status": "pending_l1",
-  "workflow_id": "770e8400-e29b-41d4-a716-446655440000"
-}
-```
+**Expected response (200):** *(full project object with `"status": "pending_l1"`)*
 
 **Error — edit after submission (400):**
 ```json
 {
   "error": "invalid_state",
   "message": "Project cannot be edited after submission."
+}
+```
+
+---
+
+### GET /api/v1/projects/dashboard/
+
+Aggregated KPI cards; cached 60 seconds in Redis. Requires `md` or `pm_full`.
+
+```http
+GET /api/v1/projects/dashboard/ HTTP/1.1
+Authorization: Bearer <access_token>
+```
+
+**Expected response (200):**
+```json
+{
+  "total_projects": 12,
+  "by_status": {"planning": 3, "in_progress": 7, "on_hold": 1, "completed": 1},
+  "total_budget": "85000000.00",
+  "total_committed": "5000000.00",
+  "pending_approvals": 2,
+  "overdue_milestones": 1
 }
 ```
 
@@ -825,7 +913,12 @@ Authorization: Bearer <access_token>
       "remaining": "33000000.00",
       "utilization_pct": 16.47
     }
-  ]
+  ],
+  "total_allocated": "40000000.00",
+  "total_committed": "5000000.00",
+  "total_spent": "2000000.00",
+  "total_remaining": "33000000.00",
+  "overall_utilization_pct": 16.47
 }
 ```
 
@@ -852,8 +945,27 @@ Content-Type: application/json
   "title": "Foundation Complete",
   "target_date": "2026-08-01",
   "status": "pending",
-  "actual_completion_date": null
+  "actual_completion_date": null,
+  "depends_on": null,
+  "created_at": "2026-03-05T14:30:00Z",
+  "updated_at": "2026-03-05T14:30:00Z"
 }
+```
+
+---
+
+### POST /api/v1/projects/{id}/documents/
+
+Attach a document to a project.
+
+```http
+POST /api/v1/projects/990e8400-e29b-41d4-a716-446655440000/documents/ HTTP/1.1
+Authorization: Bearer <access_token>
+Content-Type: multipart/form-data
+
+file=<file_upload>
+title=Project Charter
+doc_type=contract
 ```
 
 ---
@@ -889,7 +1001,26 @@ Content-Type: application/json
 }
 ```
 
-**Expected response (201):** *(site report object with `is_locked: true`)*
+**Expected response (201):**
+```json
+{
+  "id": "dd0e8400-e29b-41d4-a716-446655440000",
+  "report_date": "2026-03-05",
+  "report_type": "daily",
+  "task_description": "Excavation of grid B3-B7",
+  "progress_summary": "Excavation 60% complete. No delays encountered.",
+  "completion_pct_added": "5.00",
+  "external_labor_count": 12,
+  "weather_condition": "sunny",
+  "has_safety_incident": false,
+  "incident_description": "",
+  "is_locked": true,
+  "created_by": "329469fa-e76d-4d7e-8d10-f551dc13df45",
+  "created_by_email": "admin@example.com",
+  "created_at": "2026-03-05T14:30:00Z",
+  "materials": []
+}
+```
 
 **Error — quantity_used exceeds available (400):**
 ```json
@@ -941,24 +1072,16 @@ Content-Type: application/json
 
 ---
 
-### GET /api/v1/projects/dashboard/
+### POST /api/v1/projects/{id}/requisitions/{rid}/submit/
 
-Aggregated KPI cards; cached 60 seconds in Redis. Requires `md` or `pm_full`.
+Submits a draft requisition for approval. Creates an `ApprovalWorkflow`.
 
 ```http
-GET /api/v1/projects/dashboard/ HTTP/1.1
+POST /api/v1/projects/990e8400-e29b-41d4-a716-446655440000/requisitions/cc0e8400-e29b-41d4-a716-446655440000/submit/ HTTP/1.1
 Authorization: Bearer <access_token>
 ```
 
-**Expected response (200):**
-```json
-{
-  "total_projects": 12,
-  "by_status": {"planning": 3, "in_progress": 7, "on_hold": 1, "completed": 1},
-  "at_risk": 2,
-  "budget_utilization_avg_pct": 43.5
-}
-```
+**Expected response (200):** *(requisition object with updated status)*
 
 ---
 
@@ -977,9 +1100,9 @@ Authorization: Bearer <access_token>
 
 ## Phase 5 — Shortlets & Asset Management
 
-> **Status: Pending** — endpoints available after Phase 5 implementation.
-
 ### POST /api/v1/properties/
+
+Requires `admin_full` or `front_desk` group membership.
 
 ```http
 POST /api/v1/properties/ HTTP/1.1
@@ -1005,9 +1128,32 @@ Content-Type: application/json
   "id": "ee0e8400-e29b-41d4-a716-446655440000",
   "property_code": "PROP-SL-001",
   "name": "Victoria Island Suite A",
-  "status": "available"
+  "unit_type": "studio",
+  "location": "Plot 5, Ahmadu Bello Way, Victoria Island, Lagos",
+  "rate_nightly": "45000.00",
+  "rate_weekly": "280000.00",
+  "rate_monthly": "900000.00",
+  "amenities": ["wifi", "ac", "parking", "pool"],
+  "description": "Modern studio apartment with city views.",
+  "caution_deposit_amount": "50000.00",
+  "status": "available",
+  "created_at": "2026-03-05T14:30:00Z",
+  "updated_at": "2026-03-05T14:30:00Z"
 }
 ```
+
+---
+
+### GET /api/v1/properties/
+
+Returns a plain array of all properties. Filterable by `unit_type`, `status`, `price_min`, `price_max`.
+
+```http
+GET /api/v1/properties/?unit_type=studio&status=available HTTP/1.1
+Authorization: Bearer <access_token>
+```
+
+**Expected response (200):** *(array of property objects)*
 
 ---
 
@@ -1022,10 +1168,13 @@ Authorization: Bearer <access_token>
 
 **Expected response (200):**
 ```json
-[
-  {"check_in": "2026-03-10", "check_out": "2026-03-15"},
-  {"check_in": "2026-03-20", "check_out": "2026-03-25"}
-]
+{
+  "property_id": "ee0e8400-e29b-41d4-a716-446655440000",
+  "blocked_ranges": [
+    {"check_in": "2026-03-10", "check_out": "2026-03-15"},
+    {"check_in": "2026-03-20", "check_out": "2026-03-25"}
+  ]
+}
 ```
 
 ---
@@ -1033,6 +1182,8 @@ Authorization: Bearer <access_token>
 ### POST /api/v1/clients/
 
 Runs duplicate detection on email and phone. Returns 409 if duplicate found.
+
+> **`id_type` values:** `nin` | `passport` | `drivers_license` | `voters_card`
 
 ```http
 POST /api/v1/clients/ HTTP/1.1
@@ -1043,7 +1194,7 @@ Content-Type: application/json
   "full_name": "Emeka Okafor",
   "email": "emeka@example.com",
   "phone": "+2348023456789",
-  "id_type": "national_id",
+  "id_type": "nin",
   "id_number": "NIN12345678",
   "client_type": "individual",
   "is_vip": false
@@ -1055,7 +1206,18 @@ Content-Type: application/json
 {
   "id": "ff0e8400-e29b-41d4-a716-446655440000",
   "client_code": "CLT-0001",
-  "full_name": "Emeka Okafor"
+  "full_name": "Emeka Okafor",
+  "email": "emeka@example.com",
+  "phone": "+2348023456789",
+  "id_type": "nin",
+  "id_number": "NIN12345678",
+  "client_type": "individual",
+  "is_vip": false,
+  "preferences_notes": "",
+  "created_by": "778f77c8-510d-418e-8ae9-33262c2ea33c",
+  "booking_count": 0,
+  "created_at": "2026-03-05T14:30:00Z",
+  "updated_at": "2026-03-05T14:30:00Z"
 }
 ```
 
@@ -1067,6 +1229,19 @@ Content-Type: application/json
   "existing_id": "ff0e8400-e29b-41d4-a716-446655440000"
 }
 ```
+
+---
+
+### GET /api/v1/clients/
+
+Returns a plain array of all clients.
+
+```http
+GET /api/v1/clients/ HTTP/1.1
+Authorization: Bearer <access_token>
+```
+
+**Expected response (200):** *(array of client objects)*
 
 ---
 
@@ -1096,10 +1271,27 @@ Content-Type: application/json
 {
   "id": "aa1e8400-e29b-41d4-a716-446655440000",
   "booking_code": "BKG-2026-0001",
+  "client": "ff0e8400-e29b-41d4-a716-446655440000",
+  "client_name": "Emeka Okafor",
+  "property": "ee0e8400-e29b-41d4-a716-446655440000",
+  "property_name": "Victoria Island Suite A",
+  "check_in_date": "2026-04-01",
+  "check_out_date": "2026-04-07",
+  "rate_type": "weekly",
+  "num_guests": 2,
   "base_amount": "280000.00",
-  "caution_deposit": "50000.00",
+  "caution_deposit_amount": "50000.00",
   "total_amount": "330000.00",
-  "status": "confirmed"
+  "payment_method": "bank_transfer",
+  "payment_reference": "TRF-20260401-001",
+  "status": "confirmed",
+  "checked_in_at": null,
+  "checked_out_at": null,
+  "checkout_condition": "",
+  "created_by": "778f77c8-510d-418e-8ae9-33262c2ea33c",
+  "created_by_email": "testadmin@example.com",
+  "created_at": "2026-03-05T14:30:00Z",
+  "updated_at": "2026-03-05T14:30:00Z"
 }
 ```
 
@@ -1120,13 +1312,7 @@ POST /api/v1/bookings/aa1e8400-e29b-41d4-a716-446655440000/check-in/ HTTP/1.1
 Authorization: Bearer <access_token>
 ```
 
-**Expected response (200):**
-```json
-{
-  "status": "checked_in",
-  "checked_in_at": "2026-04-01T10:30:00Z"
-}
-```
+**Expected response (200):** *(full booking object with `"status": "checked_in"` and `checked_in_at` set)*
 
 ---
 
@@ -1155,14 +1341,7 @@ Content-Type: application/json
 }
 ```
 
-**Expected response (200):**
-```json
-{
-  "status": "checked_out",
-  "checked_out_at": "2026-04-07T11:00:00Z",
-  "refund_workflow_id": "bb1e8400-e29b-41d4-a716-446655440000"
-}
-```
+**Expected response (200):** *(full booking object with `"status": "checked_out"` and `checked_out_at` set)*
 
 ---
 
@@ -1187,6 +1366,39 @@ Authorization: Bearer <access_token>
 
 ---
 
+### GET /api/v1/deposits/
+
+Returns a plain array of caution deposits.
+
+```http
+GET /api/v1/deposits/ HTTP/1.1
+Authorization: Bearer <access_token>
+```
+
+**Expected response (200):**
+```json
+[
+  {
+    "id": "cc1e8400-e29b-41d4-a716-446655440000",
+    "booking": "aa1e8400-e29b-41d4-a716-446655440000",
+    "booking_code": "BKG-2026-0001",
+    "deposit_amount": "50000.00",
+    "deduction_amount": "0.00",
+    "deduction_reason": "",
+    "refund_amount": "50000.00",
+    "refund_method": "",
+    "account_number": "",
+    "status": "pending_refund",
+    "initiated_by": "778f77c8-510d-418e-8ae9-33262c2ea33c",
+    "processed_by": null,
+    "created_at": "2026-03-05T14:30:00Z",
+    "updated_at": "2026-03-05T14:30:00Z"
+  }
+]
+```
+
+---
+
 ### PUT /api/v1/deposits/{id}/
 
 Set refund method and bank details. Triggers caution refund approval workflow.
@@ -1204,6 +1416,8 @@ Content-Type: application/json
 }
 ```
 
+**Expected response (200):** *(updated deposit object)*
+
 ---
 
 ### GET /api/v1/clients/export/
@@ -1220,8 +1434,6 @@ Authorization: Bearer <access_token>
 ---
 
 ## Phase 6 — Maintenance & Issue Escalation
-
-> **Status: Pending** — endpoints available after Phase 6 implementation.
 
 ### POST /api/v1/maintenance/
 
@@ -1242,18 +1454,56 @@ Content-Type: application/json
 }
 ```
 
-**Expected response (201):**
+**Expected response (201):** *(full maintenance object)*
 ```json
 {
   "id": "dd1e8400-e29b-41d4-a716-446655440000",
   "request_code": "MNT-2026-0001",
+  "issue_type": "electrical",
+  "location_type": "property",
+  "property": "ee0e8400-e29b-41d4-a716-446655440000",
+  "project": null,
+  "location_details": "Master bedroom — ceiling fan sparking",
+  "priority": "high",
+  "description": "Ceiling fan in master bedroom emitting sparks when switched on.",
   "status": "open",
-  "sla_deadline": "2026-03-06T14:30:00Z",
-  "is_overdue": false
+  "is_overdue": false,
+  "sla_deadline": "2026-03-08T14:30:00Z",
+  "reported_by": "778f77c8-510d-418e-8ae9-33262c2ea33c",
+  "reported_by_email": "testadmin@example.com",
+  "assigned_to": null,
+  "assigned_to_email": null,
+  "assigned_by": null,
+  "assignment_notes": "",
+  "expected_resolution_at": null,
+  "resolved_at": null,
+  "closed_at": null,
+  "closed_by": null,
+  "resolution_notes": "",
+  "labor_hours": null,
+  "parts_cost": null,
+  "reported_at": "2026-03-07T14:30:00Z",
+  "created_at": "2026-03-07T14:30:00Z",
+  "updated_at": "2026-03-07T14:30:00Z",
+  "photos": [],
+  "status_updates": []
 }
 ```
 
 **SLA deadlines:** `critical` = +4h · `high` = +24h · `medium` = +72h · `low` = +7 days
+
+---
+
+### GET /api/v1/maintenance/
+
+Returns a plain array of maintenance requests.
+
+```http
+GET /api/v1/maintenance/ HTTP/1.1
+Authorization: Bearer <access_token>
+```
+
+**Expected response (200):** *(array of maintenance summary objects)*
 
 ---
 
@@ -1267,17 +1517,11 @@ Content-Type: application/json
 {
   "assigned_to": "ee1e8400-e29b-41d4-a716-446655440000",
   "notes": "Please attend before 6pm today.",
-  "expected_resolution_at": "2026-03-06T18:00:00Z"
+  "expected_resolution_at": "2026-03-08T18:00:00Z"
 }
 ```
 
-**Expected response (200):**
-```json
-{
-  "status": "assigned",
-  "assigned_to": "ee1e8400-e29b-41d4-a716-446655440000"
-}
-```
+**Expected response (200):** *(full maintenance object with `"status": "assigned"`)*
 
 ---
 
@@ -1304,11 +1548,15 @@ Content-Type: application/json
 }
 ```
 
+**Expected response (200):** *(full maintenance object with updated `status_updates` array)*
+
 ---
 
 ### POST /api/v1/maintenance/{id}/update-status/
 
 Creates an append-only `MaintenanceStatusUpdate` record.
+
+> **Note:** The field is `status`, not `to_status`.
 
 ```http
 POST /api/v1/maintenance/dd1e8400-e29b-41d4-a716-446655440000/update-status/ HTTP/1.1
@@ -1316,7 +1564,7 @@ Authorization: Bearer <access_token>
 Content-Type: application/json
 
 {
-  "to_status": "in_progress",
+  "status": "in_progress",
   "notes": "Work has started. Replaced faulty capacitor."
 }
 ```
@@ -1324,20 +1572,24 @@ Content-Type: application/json
 **Pending parts:**
 ```json
 {
-  "to_status": "pending_parts",
+  "status": "pending_parts",
   "notes": "Need replacement fan motor.",
-  "parts_needed": [{"item": "Ceiling Fan Motor 60W", "qty": 1}],
+  "parts_needed": ["Ceiling Fan Motor 60W x1"],
   "parts_vendor": "ElectroSupply Ltd",
   "parts_estimated_cost": "8500.00",
   "parts_expected_delivery": "2026-03-07"
 }
 ```
 
-**`to_status` values:** `in_progress` | `pending_parts` | `resolved`
+**`status` values:** `in_progress` | `pending_parts` | `resolved` | `closed`
+
+**Expected response (200):** *(full maintenance object with updated `status` and `status_updates` array)*
 
 ---
 
 ### POST /api/v1/maintenance/{id}/close/
+
+> **Note:** The request must be in `resolved` status before closing. Fields are `resolution_notes` and `labor_hours`.
 
 ```http
 POST /api/v1/maintenance/dd1e8400-e29b-41d4-a716-446655440000/close/ HTTP/1.1
@@ -1345,24 +1597,39 @@ Authorization: Bearer <access_token>
 Content-Type: application/json
 
 {
-  "verification_notes": "Issue resolved and verified. Fan operating normally."
+  "resolution_notes": "Issue resolved and verified. Fan operating normally.",
+  "labor_hours": "2.5"
 }
 ```
 
-**Expected response (200):**
-```json
-{
-  "status": "closed",
-  "resolved_at": "2026-03-06T16:45:00Z",
-  "labor_hours": 2.5
-}
+**Expected response (200):** *(full maintenance object with `"status": "closed"`, `resolved_at`, `closed_at`, `labor_hours` set)*
+
+---
+
+### GET /api/v1/maintenance/{id}/photos/
+
+List or upload photos for a maintenance request.
+
+```http
+GET /api/v1/maintenance/dd1e8400-e29b-41d4-a716-446655440000/photos/ HTTP/1.1
+Authorization: Bearer <access_token>
+```
+
+**Upload (multipart):**
+```http
+POST /api/v1/maintenance/dd1e8400-e29b-41d4-a716-446655440000/photos/ HTTP/1.1
+Authorization: Bearer <access_token>
+Content-Type: multipart/form-data
+
+photo=<file_upload>
+caption=Burned ceiling fan capacitor
 ```
 
 ---
 
 ### GET /api/v1/maintenance/metrics/
 
-Returns aggregated maintenance KPIs. Requires `admin` or `md`.
+Returns aggregated maintenance KPIs. Requires `admin_full` or `md`.
 
 ```http
 GET /api/v1/maintenance/metrics/ HTTP/1.1
@@ -1372,15 +1639,22 @@ Authorization: Bearer <access_token>
 **Expected response (200):**
 ```json
 {
-  "avg_resolution_hours_by_priority": {
-    "critical": 3.2,
-    "high": 18.5,
-    "medium": 60.0,
-    "low": 120.0
+  "by_priority": {
+    "critical": {"count": 0, "avg_resolution_hours": null},
+    "high": {"count": 1, "avg_resolution_hours": 2.5},
+    "medium": {"count": 0, "avg_resolution_hours": null},
+    "low": {"count": 0, "avg_resolution_hours": null}
   },
   "sla_breach_rate_pct": 12.5,
-  "open_count": 4,
-  "overdue_count": 1
+  "by_status": {
+    "open": 1,
+    "assigned": 0,
+    "in_progress": 0,
+    "pending_parts": 0,
+    "resolved": 0,
+    "closed": 1
+  },
+  "total": 2
 }
 ```
 
@@ -1388,11 +1662,9 @@ Authorization: Bearer <access_token>
 
 ## Phase 7 — Notification API
 
-> **Status: Pending** — endpoints available after Phase 7 implementation.
-
 ### GET /api/v1/notifications/
 
-Lists the current user's own notifications only. Filterable by `is_read`, `notification_type`.
+Lists the current user's own notifications only. Filterable by `is_read`, `notification_type`. Paginated.
 
 ```http
 GET /api/v1/notifications/?is_read=false HTTP/1.1
@@ -1471,7 +1743,7 @@ Authorization: Bearer <access_token>
 **Expected response (200):**
 ```json
 {
-  "updated": 2
+  "marked_read": 2
 }
 ```
 
@@ -1498,7 +1770,7 @@ Authorization: Bearer <access_token>
 }
 ```
 
-**Standard paginated list envelope:**
+**Standard paginated list envelope** (used by `/users/`, `/audit-logs/`, `/approvals/`, `/notifications/`):
 ```json
 {
   "count": 100,
@@ -1508,23 +1780,31 @@ Authorization: Bearer <access_token>
 }
 ```
 
+> **Non-paginated endpoints** (return plain arrays): `/properties/`, `/clients/`, `/bookings/`, `/deposits/`, `/maintenance/`
+
 ---
 
 ## Role Quick Reference
 
-| Role key | Typical access |
-|---|---|
-| `md` | Full system access |
-| `hr_full` | Users, audit logs, approval decisions |
-| `hr_limited` | View-only users (own dept) |
-| `finance_full` | Payments, requisition approvals |
-| `finance_limited` | View payments and requisitions |
-| `admin_full` | Properties, clients, bookings, maintenance |
-| `admin_limited` | View-only shortlets |
-| `pm_full` | Full project management |
-| `pm_limited` | View projects, add site reports |
-| `front_desk` | Clients, bookings, check-in/check-out |
+| Role key | `permission_level` | Typical access |
+|---|---|---|
+| `md` | `full` | Full system access |
+| `hr` | `full` | Users, audit logs, approval decisions |
+| `hr` | `limited` | View-only users (own dept) |
+| `finance` | `full` | Payments, requisition approvals |
+| `finance` | `limited` | View payments and requisitions |
+| `admin` | `full` | Properties, clients, bookings, maintenance |
+| `admin` | `limited` | View-only shortlets |
+| `pm` | `full` | Full project management |
+| `pm` | `limited` | View projects, add site reports |
+| `front_desk` | — | Clients, bookings, check-in/check-out |
+| `social_media` | — | Social media access |
+| `content_creator` | — | Content creation access |
+
+> Django permission groups use the combined format `{role}_{permission_level}`, e.g. `pm_full`, `hr_limited`, `admin_full`. The `role_snapshot` in audit logs uses this format too.
+
+> **MFA requirement:** `md` and `hr_full` roles require MFA to be configured via `POST /auth/mfa/setup/` before the standard login flow returns a JWT.
 
 ---
 
-*Last updated: All phases complete — Swagger UI & ReDoc available at `/api/schema/`*
+*Last updated: 2026-03-07 — All phases complete — verified against live API*
