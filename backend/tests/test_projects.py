@@ -852,3 +852,109 @@ def test_budget_alert_not_triggered_for_inactive_project(
 
     result = check_budget_alerts()
     assert result == 0
+
+
+# ── Edge cases: withdrawal, requisition without budget line, negative quantity ──
+
+@pytest.mark.django_db
+def test_project_withdrawal_returns_to_draft(draft_project, pm_user, l1_user, md_user):
+    """Withdrawing a pending_l1 project workflow returns project status to draft."""
+    from unittest.mock import patch
+
+    with patch("apps.approvals.tasks.send_approval_notification.delay"):
+        workflow = ProjectService.submit(draft_project, actor=pm_user)
+    assert draft_project.status == "pending_l1"
+
+    with patch("apps.approvals.tasks.send_approval_notification.delay"):
+        ApprovalService.withdraw(workflow, actor=pm_user)
+    draft_project.refresh_from_db()
+    assert draft_project.status == "draft"
+
+
+@pytest.mark.django_db
+def test_requisition_no_budget_line_approves_cleanly(
+    draft_project, pm_user, l1_user, md_user
+):
+    """Approving a requisition with no budget_line does not crash committed_amount update."""
+    from unittest.mock import patch
+
+    # Create requisition without a budget_line
+    req = Requisition.objects.create(
+        project=draft_project,
+        description="Misc expense",
+        total_amount=Decimal("10000.00"),
+        created_by=pm_user,
+        # budget_line intentionally omitted (null)
+    )
+
+    with patch("apps.approvals.tasks.send_approval_notification.delay"):
+        workflow = RequisitionService.submit(req, actor=pm_user)
+
+    # L1 approve
+    with patch("apps.approvals.tasks.send_approval_notification.delay"):
+        ApprovalService.decide(workflow, l1_user, "approved", "")
+
+    req.refresh_from_db()
+    assert req.status == "approved"
+
+
+@pytest.mark.django_db
+def test_site_report_negative_quantity_rejected(
+    api_client, draft_project, pm_user
+):
+    """quantity_used < 0 in a site report material → 400."""
+    api_client.force_authenticate(user=pm_user)
+    resp = api_client.post(
+        f"/api/v1/projects/{draft_project.id}/site-reports/",
+        {
+            "report_date": "2026-03-01",
+            "report_type": "daily",
+            "task_description": "Laying foundation",
+            "progress_summary": "50% done",
+            "weather_condition": "sunny",
+            "materials": [
+                {
+                    "material_name": "Cement",
+                    "opening_balance": "100",
+                    "new_deliveries": "0",
+                    "quantity_used": "-5",
+                    "wastage": "0",
+                    "unit": "bags",
+                    "work_area": "Foundation",
+                }
+            ],
+        },
+        format="json",
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.django_db
+def test_site_report_negative_wastage_rejected(
+    api_client, draft_project, pm_user
+):
+    """wastage < 0 in a site report material → 400."""
+    api_client.force_authenticate(user=pm_user)
+    resp = api_client.post(
+        f"/api/v1/projects/{draft_project.id}/site-reports/",
+        {
+            "report_date": "2026-03-01",
+            "report_type": "daily",
+            "task_description": "Laying foundation",
+            "progress_summary": "50% done",
+            "weather_condition": "sunny",
+            "materials": [
+                {
+                    "material_name": "Cement",
+                    "opening_balance": "100",
+                    "new_deliveries": "0",
+                    "quantity_used": "10",
+                    "wastage": "-2",
+                    "unit": "bags",
+                    "work_area": "Foundation",
+                }
+            ],
+        },
+        format="json",
+    )
+    assert resp.status_code == 400

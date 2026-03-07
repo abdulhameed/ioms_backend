@@ -591,3 +591,101 @@ def test_request_detail_shows_status_timeline(
     resp = api_client.get(f"/api/v1/maintenance/{assigned_request.id}/")
     assert resp.status_code == 200
     assert len(resp.data["status_updates"]) >= 1
+
+
+# ── Edge cases: transitions, permissions, closed-request edits ────────────────
+
+@pytest.mark.django_db
+def test_invalid_transition_non_admin_gets_400(api_client, technician_user, assigned_request):
+    """Assignee (non-admin) trying assigned → resolved (skipping in_progress) → 400."""
+    api_client.force_authenticate(user=technician_user)
+    resp = api_client.post(
+        f"/api/v1/maintenance/{assigned_request.id}/update-status/",
+        {"status": "resolved", "notes": "Jumped straight to resolved."},
+        format="json",
+    )
+    assert resp.status_code == 400
+    assert "Cannot transition" in resp.data["error"]
+
+
+@pytest.mark.django_db
+def test_admin_can_skip_transitions(api_client, admin_user, assigned_request):
+    """Admin can override transition rules: assigned → resolved directly → 200."""
+    api_client.force_authenticate(user=admin_user)
+    resp = api_client.post(
+        f"/api/v1/maintenance/{assigned_request.id}/update-status/",
+        {"status": "resolved", "notes": "Admin override."},
+        format="json",
+    )
+    assert resp.status_code == 200
+    assigned_request.refresh_from_db()
+    assert assigned_request.status == "resolved"
+
+
+@pytest.mark.django_db
+def test_third_party_cannot_update_status(
+    api_client, front_desk_user, assigned_request
+):
+    """A user who is neither assignee nor admin gets 403 on update-status."""
+    api_client.force_authenticate(user=front_desk_user)
+    resp = api_client.post(
+        f"/api/v1/maintenance/{assigned_request.id}/update-status/",
+        {"status": "in_progress", "notes": "Hijacking."},
+        format="json",
+    )
+    assert resp.status_code == 403
+
+
+@pytest.mark.django_db
+def test_pm_cannot_view_metrics(api_client, pm_user):
+    """pm_full user cannot access maintenance metrics → 403."""
+    api_client.force_authenticate(user=pm_user)
+    resp = api_client.get("/api/v1/maintenance/metrics/")
+    assert resp.status_code == 403
+
+
+@pytest.mark.django_db
+def test_edit_closed_request_returns_400(api_client, admin_user, technician_user, assigned_request):
+    """After a request is closed, PUT to edit it returns 400."""
+    # Advance to resolved, then close
+    MaintenanceService.update_status(assigned_request, actor=technician_user, new_status="in_progress")
+    MaintenanceService.update_status(assigned_request, actor=technician_user, new_status="resolved")
+    MaintenanceService.close(assigned_request, actor=admin_user, resolution_notes="Done.")
+
+    api_client.force_authenticate(user=admin_user)
+    resp = api_client.put(
+        f"/api/v1/maintenance/{assigned_request.id}/",
+        {"description": "Trying to edit closed request."},
+        format="json",
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.django_db
+def test_close_in_progress_sets_resolved_at(admin_user, technician_user, assigned_request):
+    """Closing an in_progress request (no prior resolved_at) auto-sets resolved_at = closed_at."""
+    MaintenanceService.update_status(assigned_request, actor=technician_user, new_status="in_progress")
+    assert assigned_request.resolved_at is None
+
+    MaintenanceService.close(
+        assigned_request, actor=admin_user, resolution_notes="Emergency close."
+    )
+    assigned_request.refresh_from_db()
+    assert assigned_request.resolved_at is not None
+    assert assigned_request.closed_at is not None
+    assert assigned_request.resolved_at == assigned_request.closed_at
+
+
+@pytest.mark.django_db
+def test_accept_after_accept_still_assigned(technician_user, assigned_request):
+    """Calling accept=True twice on the same request is idempotent — stays assigned."""
+    MaintenanceService.accept(assigned_request, actor=technician_user, accepted=True)
+    assigned_request.refresh_from_db()
+    assert assigned_request.status == "assigned"
+
+    # Accept again — still valid since status remains 'assigned'
+    MaintenanceService.accept(assigned_request, actor=technician_user, accepted=True)
+    assigned_request.refresh_from_db()
+    assert assigned_request.status == "assigned"
+    # Two status update log entries created
+    assert assigned_request.status_updates.count() >= 2

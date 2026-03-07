@@ -1143,3 +1143,43 @@ def test_cannot_withdraw_already_withdrawn(
         format="json",
     )
     assert resp.status_code == 400
+
+
+# ── Additional edge cases ──────────────────────────────────────────────────────
+
+@pytest.mark.django_db
+def test_whitespace_rejection_notes_fail(api_client, pending_l1_workflow, l1_user):
+    """20 spaces as rejection notes fail validation (strip() → length 0)."""
+    api_client.force_authenticate(user=l1_user)
+    resp = api_client.post(
+        approval_url(pending_l1_workflow.id, "decide"),
+        {"decision": "rejected", "notes": "                    "},
+        format="json",
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.django_db
+def test_amount_exactly_500k_does_not_require_l2():
+    """payment_requisition at exactly 500,000 → requires_l2=False (rule is > not >=)."""
+    from apps.approvals.services import ApprovalService
+    from decimal import Decimal
+
+    result = ApprovalService.evaluate_requires_l2(
+        "payment_requisition", amount=Decimal("500000.00")
+    )
+    assert result is False
+
+
+@pytest.mark.django_db
+def test_decide_on_draft_workflow_raises(pending_l1_workflow, l1_user):
+    """Deciding on a draft-status workflow raises ValueError."""
+    from apps.approvals.services import ApprovalService
+    from unittest.mock import patch
+
+    pending_l1_workflow.status = "draft"
+    pending_l1_workflow.save()
+
+    with pytest.raises(ValueError, match="Cannot decide"):
+        with patch("apps.approvals.tasks.send_approval_notification.delay"):
+            ApprovalService.decide(pending_l1_workflow, l1_user, "approved", "")

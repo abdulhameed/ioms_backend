@@ -272,14 +272,26 @@ class SiteReportMaterialSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "closing_balance"]
 
     def validate(self, data):
+        quantity_used = data.get("quantity_used", Decimal("0"))
+        wastage = data.get("wastage", Decimal("0"))
+
+        if quantity_used < Decimal("0"):
+            raise serializers.ValidationError(
+                {"quantity_used": "quantity_used cannot be negative."}
+            )
+        if wastage < Decimal("0"):
+            raise serializers.ValidationError(
+                {"wastage": "wastage cannot be negative."}
+            )
+
         available = data.get("opening_balance", Decimal("0")) + data.get(
             "new_deliveries", Decimal("0")
         )
-        if data.get("quantity_used", Decimal("0")) > available:
+        if quantity_used > available:
             raise serializers.ValidationError(
                 {
                     "quantity_used": (
-                        f"quantity_used ({data['quantity_used']}) exceeds "
+                        f"quantity_used ({quantity_used}) exceeds "
                         f"available stock ({available})."
                     )
                 }

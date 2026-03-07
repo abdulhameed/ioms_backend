@@ -865,3 +865,82 @@ def test_non_front_desk_cannot_create_client(api_client, hr_full_user):
         format="json",
     )
     assert resp.status_code == 403
+
+
+# ── Edge cases: check-in twice, property status transitions, zero caution ──────
+
+@pytest.mark.django_db
+def test_check_in_twice_returns_400(api_client, admin_user, confirmed_booking):
+    """Calling check-in on an already checked-in booking → 400."""
+    BookingService.check_in(confirmed_booking, actor=admin_user)
+    assert confirmed_booking.status == "checked_in"
+
+    api_client.force_authenticate(user=admin_user)
+    resp = api_client.post(
+        f"{BOOKINGS_URL}{confirmed_booking.id}/check-in/",
+        format="json",
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.django_db
+def test_property_occupied_after_checkin(confirmed_booking, admin_user):
+    """ShortletProperty status becomes 'occupied' immediately after check-in."""
+    BookingService.check_in(confirmed_booking, actor=admin_user)
+    confirmed_booking.property.refresh_from_db()
+    assert confirmed_booking.property.status == "occupied"
+
+
+@pytest.mark.django_db
+def test_property_available_after_checkout(confirmed_booking, admin_user, hr_full_user):
+    """ShortletProperty status returns to 'available' after check-out."""
+    from unittest.mock import patch
+
+    BookingService.check_in(confirmed_booking, actor=admin_user)
+    with patch("apps.approvals.tasks.send_approval_notification.delay"):
+        BookingService.check_out(confirmed_booking, actor=admin_user, condition="good")
+
+    confirmed_booking.property.refresh_from_db()
+    assert confirmed_booking.property.status == "available"
+
+
+@pytest.mark.django_db
+def test_zero_caution_deposit_total_equals_base(admin_user):
+    """A property with caution_deposit_amount=0 → booking total = base_amount only."""
+    from apps.shortlets.services import generate_property_code, generate_client_code
+
+    prop = ShortletProperty.objects.create(
+        name="Budget Room",
+        unit_type="studio",
+        location="Surulere, Lagos",
+        rate_nightly=Decimal("15000.00"),
+        caution_deposit_amount=Decimal("0.00"),
+        status="available",
+        property_code=generate_property_code(),
+    )
+    client = Client.objects.create(
+        full_name="No Deposit Client",
+        phone="08099999001",
+        email="nodeposit@test.com",
+        client_type="individual",
+        id_type="nin",
+        id_number="98765432100",
+        created_by=admin_user,
+        client_code=generate_client_code(),
+    )
+    from unittest.mock import patch
+
+    with patch("apps.shortlets.tasks.generate_receipt_pdf.delay"):
+        booking = BookingService.create_booking(
+            {
+                "property": prop,
+                "client": client,
+                "check_in_date": "2026-05-01",
+                "check_out_date": "2026-05-02",
+                "rate_type": "nightly",
+                "num_guests": 1,
+            },
+            actor=admin_user,
+        )
+    assert booking.caution_deposit_amount == Decimal("0.00")
+    assert booking.total_amount == booking.base_amount
