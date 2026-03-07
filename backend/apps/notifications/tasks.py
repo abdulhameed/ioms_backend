@@ -49,7 +49,7 @@ def booking_checkin_reminder():
         body_lines = [f"Tomorrow's check-ins ({tomorrow}):"]
         for b in bookings:
             body_lines.append(
-                f"  - {b.client.full_name} @ {b.property.name} (Ref: {b.booking_code})"
+                f"  - {b.client.full_name} @ {(b.apartment or b.yearly_rental).name} (Ref: {b.booking_code})"
             )
         Notification.objects.create(
             recipient=user,
